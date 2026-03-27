@@ -3166,25 +3166,7 @@ export default function PairCoderAI() {
               }}
             >
               {chatMsgs.length === 0 && (
-                <div
-                  style={{ display: "flex", gap: 8, alignItems: "flex-start" }}
-                >
-                  <div
-                    style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      background: "linear-gradient(135deg,#7c6fcd,#a78bfa)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 9,
-                      fontWeight: 700,
-                      color: "#fff",
-                    }}
-                  >
-                    AI
-                  </div>
+
                   <div
                     style={{
                       maxWidth: "85%",
