@@ -13,6 +13,11 @@
       "type": "remote",
       "url": "https://mcp.excalidraw.com",
       "enabled": true
+    },
+    "browser-use": {
+      "type": "command",
+      "command": "browser-use --mcp",
+      "enabled": true
     }
   }
 }
