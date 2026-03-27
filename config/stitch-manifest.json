@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "projects": {
+    "5325774733702625521": {
+      "screens": {
+        "6c923b94a8f044028d29683f28884b40": {
+          "image": "https://stitch-host.example.com/5325774733702625521/6c923b94a8f044028d29683f28884b40/ai-workspace-simplified-sidebar.png",
+          "code": "https://stitch-host.example.com/5325774733702625521/6c923b94a8f044028d29683f28884b40/code.json"
+        }
+      }
+    }
+  }
+}
