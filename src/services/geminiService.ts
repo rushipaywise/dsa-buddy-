@@ -3,8 +3,6 @@ import type { Spec } from "@json-render/core";
 import type { Problem } from "../constants";
 import Groq from "groq-sdk";
 import { createFallbackMentorSpec, mentorCatalogPrompt, normalizeMentorSpec } from "../jsonRender/mentorSpec";
-import { callExcalidrawTool } from "./mcpClient";
-import { EXCALIDRAW_INSTRUCTIONS } from '../lib/excalidrawInstructions';
 
 const KEY_STORAGE = "dsa-buddy-runtime-api-keys";
 
@@ -926,7 +924,7 @@ export async function getDSAGuidance(
   // isLiveKeystroke is now passed as a parameter
   const codeForPrompt = compactCodeSnippet(userCode, isLiveKeystroke ? 2500 : 4000);
 
-  const compactSystemPrompt = `You are "DSA Buddy", a proactive expert mentor. Return JSON ONLY with keys: feedback, hints, isCorrect, stage, visualizationData, mistakes, complexity, patternInfo, excalidrawElements.
+  const compactSystemPrompt = `You are "DSA Buddy", a proactive expert mentor. Return JSON ONLY with keys: feedback, hints, isCorrect, stage, visualizationData, mistakes, complexity, patternInfo.
   
   PEDAGOGICAL STRATEGY (The 5 Steps):
   You MUST guide the user through these 5 stages in order:
@@ -936,15 +934,12 @@ export async function getDSAGuidance(
   4. Example Trace: Walk through a small example to confirm logic.
   5. Complexity: Confirm Time/Space O-notation.
 
-  REAL-TIME WHITEBOARD & CONVERSATION:
+  REAL-TIME COACHING STYLE:
   1. If the user asks a question in the code comments (e.g., "// is this correct?"), YOU MUST answer it directly in the 'feedback' string!
-  2. Build intuition by DRAWING current state (arrays, pointers, hash maps) in 'excalidrawElements'.
-  3. Structure your 'hints' to suggest the NEXT step in the 5-step sequence provided in the Problem Guide below.
-  
-  EXCALIDRAW INSTRUCTIONS:
-  You must format the 'excalidrawElements' array strictly using the following official JSON syntax rules:
-  
-  ${EXCALIDRAW_INSTRUCTIONS}
+  2. In 'feedback', use flexible markdown naturally: short paragraphs, bullets, inline code, and a compact ASCII snapshot when helpful.
+  3. Prefer fast text visuals like arrays, maps, sets, pointers, and traces.
+  4. Avoid giant fenced code blocks unless they are essential. Do NOT return image plans, SVG, Excalidraw JSON, or tool instructions.
+  5. Structure your 'hints' to suggest the NEXT step in the 5-step sequence provided in the Problem Guide below.
   
   If isLiveKeystroke is true, respond IMMEDIATELY with the current state of the user's code.`;
 
@@ -1084,25 +1079,21 @@ Make each hint specific to "${problem.title}" - NOT generic!`
             Enforce the 5-step strategy: Brute Force -> Key Insight -> One Pass -> Example Trace -> Complexity.
             Structure 'hints' to lead the user to the NEXT logical step in that 5-step guide provided below.
             Answer questions in code comments (e.g. "// why this?") directly in 'feedback'.
-            Generate 'excalidrawElements' to visualize the current state of variables and pointers.
-            Draw the CURRENT state of the user's code: show arrays with active index, hash maps being built, etc.
-            Make diagrams that MATCH what the user's code is doing RIGHT NOW.
-
-            EXCALIDRAW INSTRUCTIONS:
-            ${EXCALIDRAW_INSTRUCTIONS}
+            In 'feedback', use flexible markdown naturally and include a compact ASCII snapshot of the CURRENT state of the user's code when useful.
+            Prefer fast text visuals like arrays, maps, sets, pointers, and traces.
+            Avoid giant fenced code blocks unless essential. Do NOT return images, SVG, Excalidraw JSON, or tool instructions.
 
             JSON Render Catalog:
             ${mentorCatalogPrompt}
 
             Return ONLY a JSON object matching this schema:
             {
-              "feedback": "string (short explanation, ASCII allowed)",
+              "feedback": "string (short explanation with optional ASCII snapshot)",
               "hints": ["string"],
               "isCorrect": boolean,
               "stage": "understanding" | "reasoning" | "coding" | "review",
               "mentorSpec": { "root": "string", "elements": {} },
               "visualizationData": object,
-              "excalidrawElements": [array of Excalidraw elements showing current code state],
               "patternInfo": { "name": "string", "description": "string", "relatedProblems": ["string"] },
               "mistakes": ["string"],
               "complexity": { "time": "string", "space": "string" }
@@ -1170,24 +1161,6 @@ Make each hint specific to "${problem.title}" - NOT generic!`
     return local;
   }
 
-  // Define MCP tools for Gemini
-  const mcpTools: any[] = [{
-    functionDeclarations: [{
-      name: "create_view",
-      description: "Draws a diagram using Excalidraw elements. Call this to visually explain data structures or algorithm steps.",
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          elements: {
-            type: Type.STRING,
-            description: "JSON array string of Excalidraw elements (rectangles, arrows, etc.)"
-          }
-        },
-        required: ["elements"]
-      }
-    }]
-  }];
-
   // 2. Fallback to Gemini if Groq is not available or failed
   try {
     const geminiModel = selectedProvider === "gemini" && selectedModelName ? selectedModelName : "gemini-1.5-flash";
@@ -1206,11 +1179,11 @@ Make each hint specific to "${problem.title}" - NOT generic!`
               CRITICAL: You are watching the user type in REAL-TIME.
               This app exists to build DSA intuition, not just to spit out answers.
               The user should be able to understand the next move by looking at the UI.
-              Use ONLY ASCII art/diagrams in your 'feedback' to explain concepts.
+              Use flexible markdown plus compact ASCII in your 'feedback' to explain concepts.
               Generate a visual json-render spec in 'mentorSpec' for the mentor panel.
               Add human warmth and momentum, but stay technically precise.
-              Draw the CURRENT state of the user's code: show arrays with active index, hash maps being built, pointers moving, etc.
-              Make diagrams that MATCH what the user's code is doing RIGHT NOW.
+              Show the CURRENT state of the user's code using fast text snapshots: arrays with active index, hash maps being built, pointers moving, etc.
+              Avoid giant fenced code blocks unless essential. Do NOT return SVG, image descriptions, or Excalidraw JSON.
               
               THE 5-STEP PEDAGOGY:
               1. Brute Force
@@ -1252,8 +1225,7 @@ Make each hint specific to "${problem.title}" - NOT generic!`
                 time: { type: Type.STRING },
                 space: { type: Type.STRING }
               }
-            },
-            excalidrawElements: { type: Type.ARRAY, items: { type: Type.OBJECT } }
+            }
           },
           required: ["feedback", "hints", "isCorrect", "stage"]
         }

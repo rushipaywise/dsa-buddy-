@@ -1,4 +1,92 @@
 @import "tailwindcss";
+@source "../node_modules/streamdown/dist/*.js";
+
+:root {
+  --background: oklch(0.18 0.02 260);
+  --foreground: oklch(0.96 0.01 260);
+  --card: oklch(0.23 0.02 260);
+  --card-foreground: oklch(0.96 0.01 260);
+  --muted: oklch(0.27 0.02 260);
+  --muted-foreground: oklch(0.78 0.02 260);
+  --border: oklch(0.34 0.02 260);
+  --input: oklch(0.34 0.02 260);
+  --primary: oklch(0.82 0.09 302);
+  --primary-foreground: oklch(0.18 0.02 260);
+  --radius: 0.75rem;
+}
+
+body {
+  background: #0f1117;
+  color: #e2e8f0;
+}
+
+.streamdown-shell {
+  color: #dbe7ff;
+}
+
+.streamdown-shell-muted {
+  color: #a8b4c8;
+}
+
+.streamdown-body {
+  font-family: "Space Grotesk", sans-serif;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.streamdown-body p {
+  margin: 0 0 0.7rem;
+}
+
+.streamdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.streamdown-body ul,
+.streamdown-body ol {
+  margin: 0.45rem 0 0.7rem 1rem;
+  padding: 0;
+}
+
+.streamdown-body li + li {
+  margin-top: 0.2rem;
+}
+
+.streamdown-body strong {
+  color: #c4b5fd;
+  font-weight: 700;
+}
+
+.streamdown-body code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.82em;
+  background: #0b1220;
+  border: 1px solid #273145;
+  border-radius: 0.45rem;
+  color: #79e2c0;
+  padding: 0.1rem 0.35rem;
+}
+
+.streamdown-body pre {
+  margin: 0.7rem 0;
+  padding: 0.9rem;
+  background: #0b1220;
+  border: 1px solid #273145;
+  border-radius: 0.8rem;
+  overflow-x: auto;
+}
+
+.streamdown-body pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.streamdown-body a {
+  color: #93c5fd;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
 
 @keyframes cm-blink-phase {
   0% { opacity: 1; }

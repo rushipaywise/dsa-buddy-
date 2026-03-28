@@ -11,7 +11,6 @@ import {
   setRuntimeApiKeys,
   hasConfiguredLiveProvider,
   testLiveProviderConnection,
-  AIResponse,
 } from "../services/geminiService";
 import {
   Brain,
@@ -22,10 +21,6 @@ import {
   User,
   Settings,
   Send,
-  Play,
-  Pause,
-  ChevronLeft,
-  ChevronRight,
   X,
   Square,
   Circle,
@@ -34,8 +29,7 @@ import {
   Trash2,
   Undo,
 } from "lucide-react";
-import ExcalidrawViewer from "./ExcalidrawViewer";
-import { DSAVisualizer } from "./DSAVisualizer";
+import { Streamdown } from "streamdown";
 
 const BLIND75 = [
   {
@@ -956,9 +950,7 @@ export default function PairCoderAI() {
   const [solved, setSolved] = useState(new Set());
   const [search, setSearch] = useState("");
   const [aiTab, setAiTab] = useState("visual");
-  const [drawStep, setDrawStep] = useState(0);
   const [currentStep, setCurrentStep] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [chatMsgs, setChatMsgs] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [isAIThinking, setIsAIThinking] = useState(false);
@@ -976,12 +968,13 @@ export default function PairCoderAI() {
   const [apiTestMessage, setApiTestMessage] = useState("");
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [selectedModel, setSelectedModel] = useState("auto");
-  const [aiExcalidrawElements, setAiExcalidrawElements] = useState<any[]>([]);
   const [aiGuide, setAiGuide] = useState<{
     steps: { label: string; explain: string }[];
   } | null>(null);
   const [visualType, setVisualType] = useState<string>("array");
   const [visualData, setVisualData] = useState<any>(null);
+  const [coachFeedback, setCoachFeedback] = useState("");
+  const liveCoachTimer = useRef<any>(null);
 
   // Custom questions state
   const [customQuestions, setCustomQuestions] = useState<any[]>(() => {
@@ -1016,6 +1009,45 @@ export default function PairCoderAI() {
       setCode(value);
     }, 500);
   }, []);
+
+  // Live guidance while typing (debounced)
+  useEffect(() => {
+    if (liveCoachTimer.current) clearTimeout(liveCoachTimer.current);
+    liveCoachTimer.current = setTimeout(async () => {
+      try {
+        const fullProblemData = PROBLEM_DATA[currentProb.slug];
+        if (!fullProblemData) return;
+
+        const problemData = {
+          title: currentProb.name,
+          description: fullProblemData.desc,
+          difficulty: currentProb.diff,
+          guide: fullProblemData.guide,
+          constraints: fullProblemData.constraints || [],
+          edgeCases: fullProblemData.edgeCases || [],
+          sampleData: fullProblemData.sampleData || {},
+        };
+
+        const result = await getDSAGuidance(
+          problemData,
+          codeRef.current,
+          "live-keystroke",
+          "coding",
+          chatMsgs.slice(-4),
+          {},
+          true,
+        );
+
+        applyGuidanceResult(result, fullProblemData);
+      } catch (err) {
+        console.error("❌ Live guidance error:", err);
+      }
+    }, 900);
+
+    return () => {
+      if (liveCoachTimer.current) clearTimeout(liveCoachTimer.current);
+    };
+  }, [code, language, currentProb, chatMsgs]);
 
   const getExtensions = () => {
     // 15 lines x approx 20px = 300px scroll margin
@@ -1075,6 +1107,80 @@ export default function PairCoderAI() {
         ? "#f59e0b"
         : "#ef4444";
 
+  const buildAsciiSnapshot = () => {
+    const stepLabel = guide.steps[currentStep]?.label || "Thinking";
+    const lines = [`Problem: ${currentProb.name}`, `Step: ${stepLabel}`, ""];
+    const data = visualData || {};
+
+    if (visualType === "array" && Array.isArray(data.items) && data.items.length > 0) {
+      const indexes = data.items
+        .map((_: any, i: number) => String(i).padStart(2, " "))
+        .join(" ");
+      const values = data.items
+        .map((value: any) => String(value).padStart(2, " "))
+        .join(" ");
+      lines.push(`idx: ${indexes}`);
+      lines.push(`arr: ${values}`);
+      if (typeof data.activeIndex === "number") {
+        lines.push(`cur: ${"   ".repeat(Math.max(0, data.activeIndex))}^^ index ${data.activeIndex}`);
+      }
+      if (typeof data.target !== "undefined") lines.push(`target: ${data.target}`);
+      if (typeof data.complement !== "undefined") lines.push(`need: ${data.complement}`);
+      return lines.join("\n");
+    }
+
+    if (visualType === "hashmap" && data.map && typeof data.map === "object") {
+      lines.push("map:");
+      Object.entries(data.map)
+        .slice(0, 8)
+        .forEach(([key, value]) => lines.push(`  ${key} -> ${value}`));
+      return lines.join("\n");
+    }
+
+    if (visualType === "set" && Array.isArray(data.seen)) {
+      lines.push(`seen: { ${data.seen.join(", ")} }`);
+      if (typeof data.activeIndex === "number") lines.push(`active index: ${data.activeIndex}`);
+      return lines.join("\n");
+    }
+
+    if (visualType === "sequence" && Array.isArray(data.activeSequence)) {
+      lines.push(`sequence: ${data.activeSequence.join(" -> ")}`);
+      if (data.trace?.currentLength) lines.push(`length: ${data.trace.currentLength}`);
+      return lines.join("\n");
+    }
+
+    if (visualType === "constraints") {
+      const constraints = Array.isArray(data.constraints) ? data.constraints : [];
+      const edgeCases = Array.isArray(data.edgeCases) ? data.edgeCases : [];
+      lines.push("constraints:");
+      constraints.slice(0, 4).forEach((item: string) => lines.push(`  - ${item}`));
+      if (edgeCases.length > 0) {
+        lines.push("", "edge cases:");
+        edgeCases.slice(0, 4).forEach((item: string) => lines.push(`  - ${item}`));
+      }
+      return lines.join("\n");
+    }
+
+    if (data.trace && typeof data.trace === "object") {
+      lines.push("trace:");
+      Object.entries(data.trace)
+        .slice(0, 6)
+        .forEach(([key, value]) => lines.push(`  ${key}: ${String(value)}`));
+      return lines.join("\n");
+    }
+
+    lines.push("code -> think -> simplify");
+    lines.push("watch the invariant");
+    lines.push("store only what the next step needs");
+    return lines.join("\n");
+  };
+
+  const normalizeCoachMarkdown = (text: string = "") =>
+    text
+      .replace(/<strong>(.*?)<\/strong>/g, "**$1**")
+      .replace(/<code>(.*?)<\/code>/g, "`$1`")
+      .replace(/\r\n/g, "\n");
+
   const getStarterCode = (slug: string, lang: string, probName: string) => {
     const problem = PROBLEM_DATA[slug];
     if (problem?.starter?.[lang]) {
@@ -1088,40 +1194,81 @@ export default function PairCoderAI() {
     return `// ${probName}\n// Your code here\nclass Solution {\n    \n}`;
   };
 
-  // Function to get AI-generated guide
+  // Helper: map AI response to guide/visuals
+  const applyGuidanceResult = (result: any, fullProblemData: any) => {
+    if (!result) return;
+
+    // Update visuals if present
+    const visType = result.visualType ?? result.visualizationData?.visualType;
+    const visData = result.visualData ?? result.visualizationData?.visualData;
+    setCoachFeedback(result.feedback?.trim?.() || "");
+    if (visType) setVisualType(visType);
+    if (visData) setVisualData(visData);
+    if (result.stage) {
+      const stageIndex = {
+        understanding: 0,
+        reasoning: 1,
+        coding: 2,
+        review: 4,
+      }[result.stage];
+      if (typeof stageIndex === "number") {
+        const maxIndex = Math.max(
+          0,
+          ((fullProblemData?.guide?.steps?.length || guide.steps.length) as number) - 1,
+        );
+        setCurrentStep(Math.min(stageIndex, maxIndex));
+      }
+    }
+
+    // Build guide steps from hints/feedback
+    if ((result.hints && result.hints.length > 0) || result.feedback) {
+      let aiSteps: { label: string; explain: string }[] = [];
+      if (result.hints && result.hints.length > 0) {
+        const standardLabels = ["Brute Force", "Key Insight", "One Pass", "Example Trace", "Complexity"];
+        aiSteps = result.hints.slice(0, 5).map((hint: string, i: number) => ({
+          label: standardLabels[i] || `Step ${i + 1}`,
+          explain: hint.trim(),
+        }));
+      } else if (result.feedback) {
+        aiSteps = [
+          { label: "Analysis", explain: result.feedback.trim() },
+          { label: "Key Insight", explain: "Look for patterns or optimizations based on the problem constraints." },
+          { label: "One Pass", explain: "Consider if you can solve this in a single pass through the data." },
+          { label: "Example Trace", explain: "Walk through a small example to verify your approach." },
+          { label: "Complexity", explain: "Analyze the time and space complexity of your solution." },
+        ];
+      }
+      setAiGuide({ steps: aiSteps });
+      return;
+    }
+
+    // Fallbacks
+    if (fullProblemData?.guide) {
+      setAiGuide(fullProblemData.guide);
+    } else {
+      setAiGuide(DEFAULT_GUIDE);
+    }
+  };
+
+  // Function to get AI-generated guide (on load)
   const fetchAIGuide = React.useCallback(
     async (slug: string) => {
-      console.log("🚀 fetchAIGuide called with slug:", slug);
-      
       const fullProblemData = PROBLEM_DATA[slug];
-      if (!fullProblemData) {
-        console.error("❌ No problem data found for slug:", slug);
-        return;
-      }
-      
-      console.log("📦 fullProblemData found:", !!fullProblemData);
-      console.log("📦 fullProblemData.guide:", !!fullProblemData?.guide);
-      
+      if (!fullProblemData) return;
+
       const problemData = {
-        title: fullProblemData.title,
+        title: currentProb.name,
         description: fullProblemData.desc,
-        difficulty: fullProblemData.difficulty,
+        difficulty: currentProb.diff,
         guide: fullProblemData.guide,
+        constraints: fullProblemData.constraints || [],
+        edgeCases: fullProblemData.edgeCases || [],
+        sampleData: fullProblemData.sampleData || {},
       };
-      
-      console.log("🤖 Problem data sent to AI:", {
-        title: problemData.title,
-        descriptionLength: problemData.description?.length,
-        difficulty: problemData.difficulty,
-        hasGuide: !!problemData.guide
-      });
-      
-      // Reset AI guide first to avoid stale data
+
       setAiGuide(null);
-      console.log("🧹 Reset aiGuide to null");
-      
+
       try {
-        console.log("📡 Calling getDSAGuidance...");
         const result = await getDSAGuidance(
           problemData,
           "",
@@ -1131,64 +1278,14 @@ export default function PairCoderAI() {
           {},
           false,
         );
-        
-        console.log("📥 getDSAGuidance returned:");
-        console.log("   - Provider:", result.provider, "-", result.providerStatus);
-        console.log("   - Hints:", result.hints ? `Array of length ${result.hints.length}` : "null");
-        console.log("   - Feedback:", result.feedback ? `${result.feedback?.substring(0, 100)}...` : "null");
-        console.log("   - isCorrect:", result.isCorrect);
-        
-        // Use AI response if we have hints or feedback
-        if ((result.hints && result.hints.length > 0) || result.feedback) {
-          console.log("✅ Using AI response to create guide");
-          
-          let aiSteps: {label: string; explain: string}[] = [];
-          
-          if (result.hints && result.hints.length > 0) {
-            // Use hints as steps (up to 5)
-            const standardLabels = ["Brute Force", "Key Insight", "One Pass", "Example Trace", "Complexity"];
-            aiSteps = result.hints.slice(0, 5).map((hint: string, i: number) => ({
-              label: standardLabels[i] || `Step ${i + 1}`,
-              explain: hint.trim(),
-            }));
-            console.log("📝 Created guide from hints:", aiSteps.map(s => s.label));
-          } else if (result.feedback) {
-            // Create a single-step guide from feedback, then add generic steps for the rest
-            aiSteps = [
-              { label: "Analysis", explain: result.feedback.trim() },
-              { label: "Key Insight", explain: "Look for patterns or optimizations based on the problem constraints." },
-              { label: "One Pass", explain: "Consider if you can solve this in a single pass through the data." },
-              { label: "Example Trace", explain: "Walk through a small example to verify your approach." },
-              { label: "Complexity", explain: "Analyze the time and space complexity of your solution." }
-            ];
-            console.log("📝 Created guide from feedback (with generic steps)");
-          }
-          
-          setAiGuide({ steps: aiSteps });
-        } else {
-          console.log("⚠️ AI response empty (no hints or feedback) - falling back to static guide");
-          // Fallback to static problem guide if available
-          if (fullProblemData.guide) {
-            console.log("🔄 Using static problem guide");
-            setAiGuide(fullProblemData.guide);
-          } else {
-            console.log("🔄 No static guide available - falling back to default guide");
-            setAiGuide(DEFAULT_GUIDE);
-          }
-        }
+        applyGuidanceResult(result, fullProblemData);
       } catch (err) {
         console.error("❌ Error in fetchAIGuide:", err);
-        // Fallback to static problem guide on error
-        if (fullProblemData?.guide) {
-          console.log("🔄 Error fallback to static problem guide");
-          setAiGuide(fullProblemData.guide);
-        } else {
-          console.log("🔄 Error fallback to default guide");
-          setAiGuide(DEFAULT_GUIDE);
-        }
+        if (fullProblemData?.guide) setAiGuide(fullProblemData.guide);
+        else setAiGuide(DEFAULT_GUIDE);
       }
     },
-    [currentProb.name, currentProb.diff, currentProb.slug], // Include slug in dependencies
+    [currentProb.name, currentProb.diff, currentProb.slug],
   );
 
   useEffect(() => {
@@ -1207,70 +1304,16 @@ export default function PairCoderAI() {
     setCode(starter);
     codeRef.current = starter;
     setCurrentStep(0);
-    setDrawStep(0);
-    setAiExcalidrawElements([]);
     setAiGuide(null);
     setVisualData(null);
     setVisualType("array");
+    setCoachFeedback("");
 
-    if (hasLiveAIProvider) {
-      fetchAIGuide(currentProb.slug);
-    }
+    // Always fetch a fresh guide. getDSAGuidance will fall back to the
+    // built-in local coach when no live API keys are configured, so users
+    // still get tailored steps instead of the generic placeholder.
+    fetchAIGuide(currentProb.slug);
   }, [currentProb, language, hasLiveAIProvider, fetchAIGuide]);
-
-  useEffect(() => {
-    let interval;
-    if (isPlaying && currentStep < guide.steps.length - 1) {
-      interval = setInterval(() => {
-        setCurrentStep((s) => Math.min(s + 1, guide.steps.length - 1));
-      }, 2200);
-    } else {
-      setIsPlaying(false);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentStep, guide.steps.length]);
-
-  // LIVE TEACHER: Watching every keystroke
-  useEffect(() => {
-    if (!hasLiveAIProvider || !code.trim() || code.length < 12) return;
-
-    const timer = setTimeout(async () => {
-      try {
-        const problemSlug = currentProb.slug;
-        const fullProblemData = PROBLEM_DATA[problemSlug];
-
-        const problemData = {
-          title: currentProb.name,
-          description: fullProblemData?.desc || "",
-          difficulty: currentProb.diff,
-          starterCode: fullProblemData?.starter?.[language] || "",
-          constraints: [],
-          edgeCases: [],
-          sampleData: {},
-          guide: fullProblemData?.guide || null,
-        };
-
-        const result = await getDSAGuidance(
-          problemData,
-          codeRef.current,
-          "keystroke-update",
-          "coding",
-          [],
-          {},
-          true, // isLiveKeystroke
-        );
-
-        if (result.excalidrawElements && result.excalidrawElements.length > 0) {
-          setAiExcalidrawElements(result.excalidrawElements);
-          setAiTab("draw"); // Proactively show the whiteboard
-        }
-      } catch (err) {
-        console.warn("Live coaching error:", err);
-      }
-    }, 2500); // 2.5s debounce to allow thinking
-
-    return () => clearTimeout(timer);
-  }, [code, hasLiveAIProvider, currentProb.slug, language]); // Still depend on code to trigger, but use codeRef.current for content
 
   const loadProblem = (prob, cat) => {
     setCurrentProb(prob);
@@ -1489,12 +1532,8 @@ export default function PairCoderAI() {
         },
       ]);
 
-      if (result.excalidrawElements && result.excalidrawElements.length > 0) {
-        setAiExcalidrawElements(result.excalidrawElements);
-        setAiTab("draw");
-      } else {
-        setAiTab("chat");
-      }
+      applyGuidanceResult(result, fullProblemData);
+      setAiTab("chat");
     } catch (e) {
       console.error("❌ AI Error:", e);
       setChatMsgs((msgs) => [
@@ -1559,10 +1598,8 @@ export default function PairCoderAI() {
         if (visData) {
           setVisualData(visData);
         }
-        if (result.excalidrawElements && result.excalidrawElements.length > 0) {
-          setAiExcalidrawElements(result.excalidrawElements);
-          setAiTab("draw");
-        } else if (visType || visData) {
+        applyGuidanceResult(result, fullProblemData);
+        if (visType || visData || result.feedback) {
           setAiTab("visual");
           console.log("🎨 Visual state updated from chat:", {
             visType,
@@ -1599,7 +1636,6 @@ export default function PairCoderAI() {
         const response = getAIResponse(userQ);
         setAiTab("visual");
         setCurrentStep(response.step);
-        setIsPlaying(false);
 
         setChatMsgs((msgs) => [
           ...msgs,
@@ -2547,7 +2583,7 @@ export default function PairCoderAI() {
           </div>
         </div>
         <div style={{ display: "flex", borderBottom: "1px solid #2a3348" }}>
-          {["visual", "draw", "chat"].map((tab) => (
+          {["visual", "chat"].map((tab) => (
             <button
               key={tab}
               onClick={() => setAiTab(tab)}
@@ -2569,9 +2605,7 @@ export default function PairCoderAI() {
             >
               {tab === "visual"
                 ? "📖 Guide"
-                : tab === "draw"
-                  ? "✏️ Draw"
-                  : "💬 Chat"}
+                : "💬 Chat"}
             </button>
           ))}
         </div>
@@ -2629,292 +2663,78 @@ export default function PairCoderAI() {
                 justifyContent: "center",
               }}
             >
-              {/* Dynamic DSA Visualizer - shows runtime data visualization */}
-              {visualData && visualType ? (
-                <DSAVisualizer
-                  type={
-                    visualType as
-                      | "array"
-                      | "hashmap"
-                      | "set"
-                      | "grid"
-                      | "sequence"
-                      | "constraints"
-                  }
-                  data={visualData}
-                />
-              ) : currentProb.slug === "two-sum" ? (
-                <svg
-                  width="100%"
-                  height="100%"
-                  viewBox="0 0 360 220"
-                  style={{ position: "absolute", top: 0, left: 0 }}
+              <div
+                style={{
+                  padding: 18,
+                  width: "100%",
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 10,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    color: "#a78bfa",
+                    background: "#1e2535",
+                    border: "1px solid #2a3348",
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    width: "fit-content",
+                  }}
                 >
-                  <defs>
-                    <marker
-                      id="arr"
-                      viewBox="0 0 10 10"
-                      refX="8"
-                      refY="5"
-                      markerWidth="6"
-                      markerHeight="6"
-                      orient="auto-start-reverse"
-                    >
-                      <path
-                        d="M2 1L8 5L2 9"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </marker>
-                  </defs>
-                  <text
-                    x="180"
-                    y="30"
-                    textAnchor="middle"
-                    fill="#a78bfa"
-                    fontSize="14"
-                    fontWeight="700"
-                  >
-                    {guide.title}
-                  </text>
-                  {currentStep === 0 && (
-                    <>
-                      {[2, 7, 11, 15].map((v, i) => (
-                        <g key={i}>
-                          <rect
-                            x={30 + i * 75}
-                            y="50"
-                            width="65"
-                            height="40"
-                            rx="8"
-                            fill="#7c6fcd"
-                            fillOpacity="0.15"
-                            stroke="#7c6fcd"
-                            strokeWidth="1"
-                          />
-                          <text
-                            x={62 + i * 75}
-                            y="75"
-                            textAnchor="middle"
-                            fill="#a78bfa"
-                            fontSize="14"
-                            fontWeight="600"
-                          >
-                            {v}
-                          </text>
-                          <text
-                            x={62 + i * 75}
-                            y="105"
-                            textAnchor="middle"
-                            fill="#55627a"
-                            fontSize="10"
-                          >
-                            {i}
-                          </text>
-                        </g>
-                      ))}
-                      <text
-                        x="180"
-                        y="150"
-                        textAnchor="middle"
-                        fill="#ef4444"
-                        fontSize="12"
-                      >
-                        O(n²) — check every pair
-                      </text>
-                    </>
-                  )}
-                  {currentStep === 1 && (
-                    <>
-                      <rect
-                        x="60"
-                        y="50"
-                        width="240"
-                        height="80"
-                        rx="10"
-                        fill="#7c6fcd"
-                        fillOpacity="0.15"
-                        stroke="#7c6fcd"
-                      />
-                      <text
-                        x="180"
-                        y="80"
-                        textAnchor="middle"
-                        fill="#a78bfa"
-                        fontSize="13"
-                        fontWeight="700"
-                      >
-                        Hash Map
-                      </text>
-                      <text
-                        x="180"
-                        y="105"
-                        textAnchor="middle"
-                        fill="#14b8a6"
-                        fontSize="11"
-                      >
-                        {"{ value → index }"}
-                      </text>
-                      <text
-                        x="180"
-                        y="140"
-                        textAnchor="middle"
-                        fill="#22c55e"
-                        fontSize="11"
-                      >
-                        O(1) lookup instead of scanning!
-                      </text>
-                    </>
-                  )}
-                  {currentStep === 2 && (
-                    <>
-                      {[2, 7, 11, 15].map((v, i) => (
-                        <g key={i}>
-                          <rect
-                            x={20 + i * 80}
-                            y="40"
-                            width="70"
-                            height="40"
-                            rx="8"
-                            fill={i <= 1 ? "#7c6fcd" : "#2a3348"}
-                            fillOpacity="0.15"
-                            stroke={i <= 1 ? "#7c6fcd" : "#3a4460"}
-                          />
-                          <text
-                            x={55 + i * 80}
-                            y="64"
-                            textAnchor="middle"
-                            fill={i <= 1 ? "#a78bfa" : "#55627a"}
-                            fontSize="14"
-                            fontWeight="600"
-                          >
-                            {v}
-                          </text>
-                        </g>
-                      ))}
-                      <rect
-                        x="90"
-                        y="100"
-                        width="180"
-                        height="60"
-                        rx="10"
-                        fill="#14b8a6"
-                        fillOpacity="0.15"
-                        stroke="#14b8a6"
-                      />
-                      <text
-                        x="180"
-                        y="125"
-                        textAnchor="middle"
-                        fill="#a78bfa"
-                        fontSize="13"
-                        fontWeight="700"
-                      >
-                        Map: {"{ 2: 0 }"}
-                      </text>
-                      <text
-                        x="180"
-                        y="150"
-                        textAnchor="middle"
-                        fill="#22c55e"
-                        fontSize="12"
-                        fontWeight="700"
-                      >
-                        diff = 9 - 7 = 2 → found! return [0,1]
-                      </text>
-                    </>
-                  )}
-                  {currentStep >= 3 && (
-                    <>
-                      <rect
-                        x="60"
-                        y="30"
-                        width="80"
-                        height="160"
-                        rx="6"
-                        fill="#ef4444"
-                        fillOpacity="0.15"
-                        stroke="#ef4444"
-                      />
-                      <rect
-                        x="220"
-                        y="30"
-                        width="80"
-                        height="90"
-                        rx="6"
-                        fill="#22c55e"
-                        fillOpacity="0.15"
-                        stroke="#22c55e"
-                      />
-                      <text
-                        x="100"
-                        y="100"
-                        textAnchor="middle"
-                        fill="#ef4444"
-                        fontSize="11"
-                        fontWeight="700"
-                      >
-                        O(n²)
-                      </text>
-                      <text
-                        x="260"
-                        y="70"
-                        textAnchor="middle"
-                        fill="#22c55e"
-                        fontSize="11"
-                        fontWeight="700"
-                      >
-                        O(n)
-                      </text>
-                      <text
-                        x="180"
-                        y="210"
-                        textAnchor="middle"
-                        fill="#14b8a6"
-                        fontSize="11"
-                      >
-                        Space: O(n) — Worth it!
-                      </text>
-                    </>
-                  )}
-                </svg>
-              ) : (
-                <div style={{ textAlign: "center", padding: 20 }}>
-                  <div
-                    style={{
-                      fontFamily: "'JetBrains Mono', monospace",
-                      fontSize: 10,
-                      whiteSpace: "pre-wrap",
-                      textAlign: "left",
-                      color: "#14b8a6",
-                      background: "#0f1117",
-                      padding: 15,
-                      borderRadius: 8,
-                      border: "1px solid #2a3348",
-                      marginBottom: 16,
-                      maxHeight: 150,
-                      overflow: "auto"
-                    }}
-                  >
-                    {/* Minimalist ASCII fallback for the current step */}
-                    {`[ STEP ${currentStep + 1}: ${guide.steps[currentStep]?.label.toUpperCase()} ]\n\n${guide.steps[currentStep]?.explain.substring(0, 160)}...`}
-                  </div>
-                  <div
-                    style={{
-                      color: "#a78bfa",
-                      fontWeight: 700,
-                      fontSize: 14,
-                      marginBottom: 8,
-                    }}
-                  >
-                    {guide.steps[currentStep]?.label}
-                  </div>
-
+                  {hasLiveAIProvider ? "Live AI Guide" : "Local Coach"}
+                  <span style={{ color: "#55627a" }}>
+                    · Step {currentStep + 1} of {guide.steps.length}
+                  </span>
                 </div>
-              )}
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
+                  {guide.steps[currentStep]?.label}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: 11,
+                    lineHeight: 1.6,
+                    whiteSpace: "pre-wrap",
+                    color: "#9ae6b4",
+                    background: "#0b1220",
+                    border: "1px solid #1f2937",
+                    borderRadius: 8,
+                    padding: 12,
+                    minHeight: 120,
+                  }}
+                >
+                  {buildAsciiSnapshot()}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    background: "#0f1117",
+                    border: "1px solid #2a3348",
+                    borderRadius: 8,
+                    padding: 12,
+                  }}
+                >
+                  <div className="streamdown-shell">
+                    <Streamdown
+                      parseIncompleteMarkdown
+                      className="streamdown-body"
+                    >
+                      {normalizeCoachMarkdown(
+                        coachFeedback || guide.steps[currentStep]?.explain || "",
+                      )}
+                    </Streamdown>
+                  </div>
+                </div>
+              </div>
             </div>
             <div
               style={{
@@ -2934,213 +2754,23 @@ export default function PairCoderAI() {
               >
                 Teacher observing
               </div>
-              <div style={{ fontSize: 12, color: "#8892a4", lineHeight: 1.6 }}>
-                {guide.steps[currentStep]?.explain}
-              </div>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 12px",
-                borderTop: "1px solid #2a3348",
-              }}
-            >
-              <button
-                onClick={() => setCurrentStep((s) => Math.max(0, s - 1))}
-                disabled={currentStep === 0}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 7,
-                  border: "1px solid #3a4460",
-                  background: "transparent",
-                  color: "#8892a4",
-                  cursor: "pointer",
-                }}
-              >
-                ‹
-              </button>
-              <button
-                onClick={() => setIsPlaying(!isPlaying)}
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7c6fcd",
-                  color: "#fff",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                {isPlaying ? "⏸" : "▶"}
-              </button>
-              <button
-                onClick={() =>
-                  setCurrentStep((s) => Math.min(guide.steps.length - 1, s + 1))
-                }
-                disabled={currentStep >= guide.steps.length - 1}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 7,
-                  border: "1px solid #3a4460",
-                  background: "transparent",
-                  color: "#8892a4",
-                  cursor: "pointer",
-                }}
-              >
-                ›
-              </button>
               <div
                 style={{
-                  flex: 1,
-                  display: "flex",
-                  gap: 4,
-                  justifyContent: "center",
-                }}
-              >
-                {guide.steps.map((_, i) => (
-                  <div
-                    key={i}
-                    onClick={() => setCurrentStep(i)}
-                    style={{
-                      width: i === currentStep ? 14 : 5,
-                      height: 5,
-                      borderRadius: i === currentStep ? 3 : "50%",
-                      background: i === currentStep ? "#a78bfa" : "#3a4460",
-                      cursor: "pointer",
-                      transition: "all 0.2s",
-                    }}
-                  />
-                ))}
-              </div>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "#55627a",
-                  fontFamily: "'JetBrains Mono', monospace",
-                }}
-              >
-                {currentStep + 1} / {guide.steps.length}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* EXCALIDRAW DRAW TAB */}
-        {aiTab === "draw" && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              flex: 1,
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ flex: 1, padding: 10, overflow: "hidden" }}>
-              <ExcalidrawViewer
-                elements={aiExcalidrawElements}
-                problemSlug={currentProb.slug}
-              />
-            </div>
-            <div
-              style={{
-                padding: "10px 14px",
-                borderTop: "1px solid #2a3348",
-                background: "#161b27",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  color: "#55627a",
-                  letterSpacing: "0.05em",
-                  marginBottom: 3,
-                }}
-              >
-                Excalidraw Visualization
-              </div>
-              <div style={{ fontSize: 12, color: "#8892a4", lineHeight: 1.6 }}>
-                Hand-drawn diagram for{" "}
-                <strong style={{ color: "#a78bfa" }}>{currentProb.name}</strong>
-                . Step through to see the algorithm in action.
-              </div>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 12px",
-                borderTop: "1px solid #2a3348",
-              }}
-            >
-              <button
-                onClick={() => setDrawStep((s) => Math.max(0, s - 1))}
-                disabled={drawStep === 0}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 7,
-                  border: "1px solid #3a4460",
-                  background: "transparent",
+                  fontSize: 12,
                   color: "#8892a4",
-                  cursor: "pointer",
-                  fontSize: 14,
                 }}
               >
-                ‹
-              </button>
-              <button
-                onClick={() => setDrawStep(0)}
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: 8,
-                  border: "none",
-                  background: "#7c6fcd",
-                  color: "#fff",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 11,
-                  fontWeight: 700,
-                }}
-              >
-                ↺
-              </button>
-              <button
-                onClick={() => setDrawStep((s) => s + 1)}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 7,
-                  border: "1px solid #3a4460",
-                  background: "transparent",
-                  color: "#8892a4",
-                  cursor: "pointer",
-                  fontSize: 14,
-                }}
-              >
-                ›
-              </button>
-              <div style={{ flex: 1 }} />
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "#55627a",
-                  fontFamily: "'JetBrains Mono', monospace",
-                }}
-              >
-                step {drawStep + 1}
-              </span>
+                <div className="streamdown-shell streamdown-shell-muted">
+                  <Streamdown
+                    parseIncompleteMarkdown
+                    className="streamdown-body"
+                  >
+                    {normalizeCoachMarkdown(
+                      coachFeedback || guide.steps[currentStep]?.explain || "",
+                    )}
+                  </Streamdown>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -3215,7 +2845,6 @@ export default function PairCoderAI() {
                       ))}
                     </div>
                   </div>
-                </div>
               )}
               {chatMsgs.map((m, i) => (
                 <div
@@ -3258,20 +2887,14 @@ export default function PairCoderAI() {
                       lineHeight: 1.6,
                     }}
                   >
-                    <span
-                      style={{ color: "#a78bfa" }}
-                      dangerouslySetInnerHTML={{
-                        __html: m.text
-                          .replace(
-                            /<strong>/g,
-                            '<strong style="color:#a78bfa">',
-                          )
-                          .replace(
-                            /<code>/g,
-                            '<code style="font-family:JetBrains Mono;font-size:10px;background:#0f1117;padding:1px 4px;border-radius:3px;color:#14b8a6">',
-                          ),
-                      }}
-                    />
+                    <div className="streamdown-shell">
+                      <Streamdown
+                        parseIncompleteMarkdown
+                        className="streamdown-body"
+                      >
+                        {normalizeCoachMarkdown(m.text || "")}
+                      </Streamdown>
+                    </div>
                     {m.chips && (
                       <div
                         style={{
