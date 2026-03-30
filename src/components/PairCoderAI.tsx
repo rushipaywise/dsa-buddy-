@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
@@ -940,6 +942,32 @@ const DEFAULT_GUIDE = {
   ],
 };
 
+const EDITOR_PREFS_KEY = "dsa-buddy-editor-prefs";
+
+const DEFAULT_EDITOR_PREFS = {
+  autoCloseBrackets: true,
+  autocomplete: true,
+  docsTooltips: true,
+  fontSize: "large",
+  darkMode: true,
+  highContrastMode: false,
+  showWhitespace: false,
+  wordWrap: true,
+};
+
+const FONT_SIZE_MAP: Record<string, number> = {
+  small: 12,
+  medium: 13,
+  large: 15,
+};
+
+const MEDIUM_BREAKPOINT = 1200;
+const COMPACT_BREAKPOINT = 960;
+const MIN_LEFT_PANEL_WIDTH = 220;
+const MAX_LEFT_PANEL_WIDTH = 360;
+const MIN_RIGHT_PANEL_WIDTH = 300;
+const MAX_RIGHT_PANEL_WIDTH = 460;
+
 export default function PairCoderAI() {
   const [problems] = useState(BLIND75);
   const [currentProb, setCurrentProb] = useState(BLIND75[0].problems[0]);
@@ -974,11 +1002,50 @@ export default function PairCoderAI() {
   const [visualType, setVisualType] = useState<string>("array");
   const [visualData, setVisualData] = useState<any>(null);
   const [coachFeedback, setCoachFeedback] = useState("");
+  const [editorPrefs, setEditorPrefs] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_EDITOR_PREFS;
+    try {
+      const saved = window.localStorage.getItem(EDITOR_PREFS_KEY);
+      return saved
+        ? { ...DEFAULT_EDITOR_PREFS, ...JSON.parse(saved) }
+        : DEFAULT_EDITOR_PREFS;
+    } catch {
+      return DEFAULT_EDITOR_PREFS;
+    }
+  });
+  const [runnerStdin, setRunnerStdin] = useState("");
+  const [runnerStdout, setRunnerStdout] = useState(
+    "Output will appear here after you run the code.",
+  );
+  const [runnerStatus, setRunnerStatus] = useState<
+    "idle" | "running" | "success" | "error" | "unsupported"
+  >("idle");
+  const [runnerMeta, setRunnerMeta] = useState("Press Cmd+Enter or Ctrl+Enter to run.");
+  const [lastSavedAt, setLastSavedAt] = useState<string>("");
   const liveCoachTimer = useRef<any>(null);
+  const [viewportWidth, setViewportWidth] = useState(
+    typeof window === "undefined" ? 1440 : window.innerWidth,
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [aiPanelWidth, setAiPanelWidth] = useState(380);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(
+    typeof window === "undefined" ? true : window.innerWidth > MEDIUM_BREAKPOINT,
+  );
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(
+    typeof window === "undefined" ? true : window.innerWidth > COMPACT_BREAKPOINT,
+  );
+  const [activeDrag, setActiveDrag] = useState<null | "sidebar" | "ai">(null);
+  const breakpointStateRef = useRef({
+    medium:
+      typeof window === "undefined" ? false : window.innerWidth <= MEDIUM_BREAKPOINT,
+    compact:
+      typeof window === "undefined" ? false : window.innerWidth <= COMPACT_BREAKPOINT,
+  });
 
   // Custom questions state
   const [customQuestions, setCustomQuestions] = useState<any[]>(() => {
-    const saved = localStorage.getItem("dsa-custom-questions");
+    if (typeof window === "undefined") return [];
+    const saved = window.localStorage.getItem("dsa-custom-questions");
     return saved ? JSON.parse(saved) : [];
   });
   const [showAddQuestion, setShowAddQuestion] = useState(false);
@@ -1049,6 +1116,78 @@ export default function PairCoderAI() {
     };
   }, [code, language, currentProb, chatMsgs]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(EDITOR_PREFS_KEY, JSON.stringify(editorPrefs));
+  }, [editorPrefs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const isMediumViewport = viewportWidth <= MEDIUM_BREAKPOINT;
+  const isCompactViewport = viewportWidth <= COMPACT_BREAKPOINT;
+
+  useEffect(() => {
+    const previous = breakpointStateRef.current;
+
+    if (isMediumViewport !== previous.medium) {
+      setIsSidebarOpen(!isMediumViewport);
+    }
+
+    if (isCompactViewport !== previous.compact) {
+      setIsAiPanelOpen(!isCompactViewport);
+    }
+
+    breakpointStateRef.current = {
+      medium: isMediumViewport,
+      compact: isCompactViewport,
+    };
+  }, [isMediumViewport, isCompactViewport]);
+
+  useEffect(() => {
+    if (!activeDrag || typeof window === "undefined") return undefined;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (activeDrag === "sidebar") {
+        const nextWidth = Math.min(
+          MAX_LEFT_PANEL_WIDTH,
+          Math.max(MIN_LEFT_PANEL_WIDTH, event.clientX),
+        );
+        setSidebarWidth(nextWidth);
+        return;
+      }
+
+      const nextWidth = Math.min(
+        MAX_RIGHT_PANEL_WIDTH,
+        Math.max(MIN_RIGHT_PANEL_WIDTH, window.innerWidth - event.clientX),
+      );
+      setAiPanelWidth(nextWidth);
+    };
+
+    const stopDragging = () => setActiveDrag(null);
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopDragging);
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopDragging);
+    };
+  }, [activeDrag]);
+
   const getExtensions = () => {
     // 15 lines x approx 20px = 300px scroll margin
     const scrollPadding = EditorView.scrollMargins.of(() => ({
@@ -1058,9 +1197,18 @@ export default function PairCoderAI() {
 
     const customTheme = EditorView.theme(
       {
+        "&": {
+          backgroundColor: editorPrefs.darkMode ? "#0f1117" : "#f8fafc",
+          color: editorPrefs.darkMode ? "#e2e8f0" : "#0f172a",
+        },
+        ".cm-scroller": {
+          fontFamily: "'JetBrains Mono', monospace",
+        },
         ".cm-cursor": {
           borderLeft: "none !important",
-          borderBottom: "2.5px solid #a78bfa !important",
+          borderBottom: `2.5px solid ${
+            editorPrefs.highContrastMode ? "#facc15" : "#a78bfa"
+          } !important`,
           transition: "left 0.12s ease-out, top 0.1s ease-out",
           width: "0.55em !important",
           height: "1.25em !important",
@@ -1069,11 +1217,29 @@ export default function PairCoderAI() {
         ".cm-cursorLayer": {
           animation: "cm-blink-phase 1.2s ease-in-out infinite",
         },
+        ".cm-content": {
+          caretColor: editorPrefs.highContrastMode ? "#facc15" : "#a78bfa",
+        },
+        ".cm-activeLine": {
+          backgroundColor: editorPrefs.darkMode
+            ? editorPrefs.highContrastMode
+              ? "#172033"
+              : "#161b27"
+            : "#e2e8f0",
+        },
+        ".cm-gutters": {
+          backgroundColor: editorPrefs.darkMode ? "#111827" : "#f1f5f9",
+          color: editorPrefs.darkMode ? "#64748b" : "#64748b",
+          borderRight: `1px solid ${
+            editorPrefs.highContrastMode ? "#facc15" : "#2a3348"
+          }`,
+        },
       },
-      { dark: true },
+      { dark: editorPrefs.darkMode },
     );
 
-    const exts = [vscodeDark, scrollPadding, customTheme];
+    const exts = [scrollPadding, customTheme];
+    if (editorPrefs.wordWrap) exts.push(EditorView.lineWrapping);
     if (language === "python") exts.push(python());
     if (language === "javascript") exts.push(javascript());
     if (language === "java") exts.push(java());
@@ -1180,6 +1346,79 @@ export default function PairCoderAI() {
       .replace(/<strong>(.*?)<\/strong>/g, "**$1**")
       .replace(/<code>(.*?)<\/code>/g, "`$1`")
       .replace(/\r\n/g, "\n");
+
+  const updateEditorPref = (key: string, value: any) => {
+    setEditorPrefs((prev: any) => ({ ...prev, [key]: value }));
+  };
+
+  const formatRunnerValue = (value: any): string => {
+    if (typeof value === "string") return value;
+    if (typeof value === "undefined") return "";
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const runJavaScriptLocally = (source: string, stdin: string) => {
+    const logs: string[] = [];
+    const startTime = performance.now();
+    const startMemory =
+      typeof performance !== "undefined" &&
+      "memory" in performance &&
+      (performance as any).memory?.usedJSHeapSize
+        ? Number((performance as any).memory.usedJSHeapSize)
+        : null;
+
+    const consoleProxy = {
+      ...console,
+      log: (...args: any[]) => logs.push(args.map(formatRunnerValue).join(" ")),
+      error: (...args: any[]) =>
+        logs.push(`ERROR: ${args.map(formatRunnerValue).join(" ")}`),
+      warn: (...args: any[]) =>
+        logs.push(`WARN: ${args.map(formatRunnerValue).join(" ")}`),
+    };
+
+    const executor = new Function(
+      "stdin",
+      "console",
+      `
+        "use strict";
+        let __result;
+        ${source}
+        if (typeof solve === "function") __result = solve(stdin);
+        else if (typeof main === "function") __result = main(stdin);
+        else if (typeof solution === "function") __result = solution(stdin);
+        return __result;
+      `,
+    );
+
+    const result = executor(stdin, consoleProxy);
+    if (typeof result !== "undefined") {
+      logs.push(formatRunnerValue(result));
+    }
+
+    const endTime = performance.now();
+    const endMemory =
+      typeof performance !== "undefined" &&
+      "memory" in performance &&
+      (performance as any).memory?.usedJSHeapSize
+        ? Number((performance as any).memory.usedJSHeapSize)
+        : null;
+
+    const runtimeMs = Math.max(1, Math.round(endTime - startTime));
+    const memoryLabel =
+      startMemory !== null && endMemory !== null
+        ? `${Math.max(endMemory, startMemory) / (1024 * 1024)}`.slice(0, 4) + " MB"
+        : "n/a";
+
+    return {
+      stdout:
+        logs.join("\n").trim() || "Program finished successfully with no stdout.",
+      meta: `${runtimeMs} ms | ${memoryLabel}`,
+    };
+  };
 
   const getStarterCode = (slug: string, lang: string, probName: string) => {
     const problem = PROBLEM_DATA[slug];
@@ -1318,6 +1557,9 @@ export default function PairCoderAI() {
   const loadProblem = (prob, cat) => {
     setCurrentProb(prob);
     setCurrentCat(cat);
+    if (viewportWidth <= MEDIUM_BREAKPOINT) {
+      setIsSidebarOpen(false);
+    }
   };
 
   const submitProblem = () => {
@@ -1431,24 +1673,53 @@ export default function PairCoderAI() {
 
   // Save code to localStorage
   const saveCode = () => {
+    if (typeof window === "undefined") return;
     const key = `dsa-code-${currentProb.slug}-${language}`;
-    localStorage.setItem(key, codeRef.current);
+    window.localStorage.setItem(key, codeRef.current);
+    setLastSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
     console.log("💾 Code saved for", currentProb.slug);
   };
 
   // Load saved code from localStorage
   const loadSavedCode = (slug: string, lang: string): string | null => {
+    if (typeof window === "undefined") return null;
     const key = `dsa-code-${slug}-${lang}`;
-    return localStorage.getItem(key);
+    return window.localStorage.getItem(key);
   };
 
   const handleRun = async () => {
     saveCode(); // Save before running
+    setRunnerStatus("running");
+    setRunnerStdout("Running your code...");
+    setRunnerMeta("Preparing execution...");
     setIsAIThinking(true);
     setAiTab("chat");
     setChatMsgs((prev) => [...prev, { role: "user", text: "▶ Run my code" }]);
 
     try {
+      try {
+        if (language === "javascript") {
+          const runResult = runJavaScriptLocally(codeRef.current, runnerStdin);
+          setRunnerStatus("success");
+          setRunnerStdout(runResult.stdout);
+          setRunnerMeta(runResult.meta);
+        } else {
+          setRunnerStatus("unsupported");
+          setRunnerStdout(
+            `Local execution is currently available for JavaScript only.\n\nSelected language: ${language}\nYou can still save code, use AI review, and I can add a backend runner for Python/Java next.`,
+          );
+          setRunnerMeta("No local runtime attached");
+        }
+      } catch (runError) {
+        setRunnerStatus("error");
+        setRunnerStdout(
+          runError instanceof Error
+            ? runError.message
+            : "Code execution failed unexpectedly.",
+        );
+        setRunnerMeta("Execution error");
+      }
+
       const problemSlug = currentProb.slug;
       const fullProblemData = PROBLEM_DATA[problemSlug];
 
@@ -1545,6 +1816,13 @@ export default function PairCoderAI() {
       ]);
     }
     setIsAIThinking(false);
+  };
+
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      handleRun();
+    }
   };
 
   const sendChat = async () => {
@@ -1650,18 +1928,645 @@ export default function PairCoderAI() {
     setIsAIThinking(false);
   };
 
+  const inlineSidebarVisible = isSidebarOpen && !isMediumViewport;
+  const overlaySidebarVisible = isSidebarOpen && isMediumViewport;
+  const inlineAiVisible = isAiPanelOpen && !isCompactViewport;
+  const overlayAiVisible = isAiPanelOpen && isCompactViewport;
+  const showOverlayBackdrop = overlaySidebarVisible || overlayAiVisible;
+  const contentColumns = [
+    inlineSidebarVisible ? `${sidebarWidth}px` : "0px",
+    inlineSidebarVisible ? "8px" : "0px",
+    "minmax(0, 1fr)",
+    inlineAiVisible ? "8px" : "0px",
+    inlineAiVisible ? `${aiPanelWidth}px` : "0px",
+  ].join(" ");
+  const overlaySidebarWidth = Math.min(
+    Math.max(sidebarWidth, MIN_LEFT_PANEL_WIDTH),
+    Math.max(280, viewportWidth - 32),
+  );
+  const overlayAiWidth = Math.min(
+    Math.max(aiPanelWidth, MIN_RIGHT_PANEL_WIDTH),
+    Math.max(320, viewportWidth - 32),
+  );
+  const runnerGridColumns =
+    viewportWidth <= 900
+      ? "1fr"
+      : "minmax(180px, 0.9fr) minmax(220px, 1.1fr)";
+  const sidebarToggleStyle = (active: boolean): React.CSSProperties => ({
+    padding: "5px 12px",
+    borderRadius: 7,
+    border: "1px solid #3a4460",
+    background: active ? "#1e1b38" : "#161b27",
+    color: active ? "#a78bfa" : "#8892a4",
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: "pointer",
+  });
+  const resizeHandleStyle: React.CSSProperties = {
+    background: "#111827",
+    cursor: "col-resize",
+    position: "relative",
+  };
+  const resizeHandleRailStyle: React.CSSProperties = {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: "50%",
+    width: 2,
+    transform: "translateX(-50%)",
+    background: "#2a3348",
+  };
+  const sidebarPanel = (style: React.CSSProperties = {}) => (
+    <div
+      style={{
+        borderRight: "1px solid #2a3348",
+        background: "#161b27",
+        overflowY: "auto",
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          padding: "10px 12px 6px",
+          position: "sticky",
+          top: 0,
+          background: "#161b27",
+          zIndex: 5,
+          borderBottom: "1px solid #2a3348",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            color: "#8892a4",
+            letterSpacing: "0.06em",
+          }}
+        >
+          Blind 75 · NeetCode
+        </div>
+        <input
+          style={{
+            width: "100%",
+            marginTop: 6,
+            padding: "5px 10px",
+            background: "#1e2535",
+            border: "1px solid #2a3348",
+            borderRadius: 7,
+            color: "#e2e8f0",
+            fontSize: 11,
+            outline: "none",
+          }}
+          placeholder="Search problems..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+      {filteredProblems.map((cat) => (
+        <div key={cat.cat}>
+          <div
+            style={{
+              padding: "8px 12px 3px",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#55627a",
+              letterSpacing: "0.06em",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: "50%",
+                background: cat.color,
+              }}
+            />
+            {cat.cat}
+          </div>
+          {cat.problems.map((prob) => (
+            <div
+              key={prob.id}
+              onClick={() => loadProblem(prob, cat)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "5px 12px",
+                cursor: "pointer",
+                borderLeft:
+                  currentProb.id === prob.id
+                    ? "2px solid #a78bfa"
+                    : "2px solid transparent",
+                background:
+                  currentProb.id === prob.id ? "#1e1b38" : "transparent",
+                transition: "all 0.1s",
+              }}
+            >
+              <span style={{ fontSize: 10, color: "#55627a", minWidth: 22 }}>
+                {solved.has(prob.id) ? "✓" : `#${prob.id}`}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: currentProb.id === prob.id ? "#e2e8f0" : "#8892a4",
+                  flex: 1,
+                  fontWeight: 500,
+                }}
+              >
+                {prob.name}
+              </span>
+              <div
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background:
+                    prob.diff === "Easy"
+                      ? "#22c55e"
+                      : prob.diff === "Medium"
+                        ? "#f59e0b"
+                        : "#ef4444",
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+  const aiPanel = (style: React.CSSProperties = {}) => (
+    <div
+      style={{
+        borderLeft: "1px solid #2a3348",
+        background: "#161b27",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        minWidth: 0,
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "10px 14px",
+          borderBottom: "1px solid #2a3348",
+        }}
+      >
+        <div
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: "50%",
+            background: "linear-gradient(135deg,#7c6fcd,#a78bfa)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            fontWeight: 700,
+            color: "#fff",
+          }}
+        >
+          AI
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>Pair Coder</div>
+          <div style={{ fontSize: 10, color: "#55627a" }}>
+            Visual Teacher · Always watching
+          </div>
+        </div>
+        <div
+          style={{
+            marginLeft: "auto",
+            fontSize: 10,
+            color: "#14b8a6",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          <div
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: "50%",
+              background: "#14b8a6",
+              animation: "pulse 1.5s ease-in-out infinite",
+            }}
+          />
+          Active
+        </div>
+      </div>
+      <div style={{ display: "flex", borderBottom: "1px solid #2a3348" }}>
+        {["visual", "chat"].map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setAiTab(tab)}
+            style={{
+              flex: 1,
+              padding: "8px 6px",
+              fontSize: 11,
+              fontWeight: 600,
+              color: aiTab === tab ? "#a78bfa" : "#55627a",
+              background: "transparent",
+              borderStyle: "solid",
+              borderTopWidth: 0,
+              borderLeftWidth: 0,
+              borderRightWidth: 0,
+              borderBottomWidth: 2,
+              borderColor: aiTab === tab ? "#7c6fcd" : "transparent",
+              cursor: "pointer",
+            }}
+          >
+            {tab === "visual" ? "📖 Guide" : "💬 Chat"}
+          </button>
+        ))}
+      </div>
+
+      {aiTab === "visual" && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              gap: 4,
+              padding: "10px 12px",
+              borderBottom: "1px solid #2a3348",
+              flexWrap: "wrap",
+            }}
+          >
+            {guide.steps.map((s, i) => (
+              <div
+                key={i}
+                onClick={() => setCurrentStep(i)}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 20,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  border: "1px solid #3a4460",
+                  color: currentStep === i ? "#a78bfa" : "#55627a",
+                  background: currentStep === i ? "#1e1b38" : "transparent",
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                {s.label}
+              </div>
+            ))}
+          </div>
+          <div
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              position: "relative",
+              background: "#0f1117",
+              margin: 10,
+              borderRadius: 10,
+              border: "1px solid #2a3348",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                padding: 18,
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 10,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  color: "#a78bfa",
+                  background: "#1e2535",
+                  border: "1px solid #2a3348",
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  width: "fit-content",
+                }}
+              >
+                {hasLiveAIProvider ? "Live AI Guide" : "Local Coach"}
+                <span style={{ color: "#55627a" }}>
+                  · Step {currentStep + 1} of {guide.steps.length}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
+                {guide.steps[currentStep]?.label}
+              </div>
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  lineHeight: 1.6,
+                  whiteSpace: "pre-wrap",
+                  color: "#9ae6b4",
+                  background: "#0b1220",
+                  border: "1px solid #1f2937",
+                  borderRadius: 8,
+                  padding: 12,
+                  minHeight: 120,
+                }}
+              >
+                {buildAsciiSnapshot()}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  background: "#0f1117",
+                  border: "1px solid #2a3348",
+                  borderRadius: 8,
+                  padding: 12,
+                }}
+              >
+                <div className="streamdown-shell">
+                  <Streamdown
+                    parseIncompleteMarkdown
+                    className="streamdown-body"
+                  >
+                    {normalizeCoachMarkdown(
+                      coachFeedback || guide.steps[currentStep]?.explain || "",
+                    )}
+                  </Streamdown>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            style={{
+              padding: "10px 14px",
+              borderTop: "1px solid #2a3348",
+              background: "#161b27",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: "#55627a",
+                letterSpacing: "0.05em",
+                marginBottom: 3,
+              }}
+            >
+              Teacher observing
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: "#8892a4",
+              }}
+            >
+              <div className="streamdown-shell streamdown-shell-muted">
+                <Streamdown
+                  parseIncompleteMarkdown
+                  className="streamdown-body"
+                >
+                  {normalizeCoachMarkdown(
+                    coachFeedback || guide.steps[currentStep]?.explain || "",
+                  )}
+                </Streamdown>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiTab === "chat" && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            {chatMsgs.length === 0 && (
+              <div
+                style={{
+                  maxWidth: "85%",
+                  padding: "8px 11px",
+                  borderRadius: 10,
+                  background: "#1e2535",
+                  border: "1px solid #2a3348",
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                }}
+              >
+                I&apos;m your <strong>AI Pair Coder</strong>. I&apos;ll watch your
+                code and guide you visually through every Blind 75 pattern.
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 4,
+                    marginTop: 6,
+                  }}
+                >
+                  {[
+                    "Explain pattern",
+                    "Visual guide",
+                    "What pattern?",
+                    "I'm stuck",
+                  ].map((c) => (
+                    <span
+                      key={c}
+                      onClick={() => {
+                        setChatInput(c);
+                        setTimeout(() => sendChat(), 100);
+                      }}
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 8px",
+                        borderRadius: 20,
+                        background: "#252d3d",
+                        border: "1px solid #3a4460",
+                        color: "#55627a",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {chatMsgs.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexDirection: m.role === "user" ? "row-reverse" : "row",
+                  alignItems: "flex-start",
+                }}
+              >
+                <div
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: "50%",
+                    background:
+                      m.role === "ai"
+                        ? "linear-gradient(135deg,#7c6fcd,#a78bfa)"
+                        : "#252d3d",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: "#fff",
+                  }}
+                >
+                  {m.role === "ai" ? "AI" : "U"}
+                </div>
+                <div
+                  style={{
+                    maxWidth: "85%",
+                    padding: "8px 11px",
+                    borderRadius: 10,
+                    background: m.role === "ai" ? "#1e2535" : "#1e1b38",
+                    border: "1px solid #2a3348",
+                    color: "#e2e8f0",
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  <div className="streamdown-shell">
+                    <Streamdown
+                      parseIncompleteMarkdown
+                      className="streamdown-body"
+                    >
+                      {normalizeCoachMarkdown(m.text || "")}
+                    </Streamdown>
+                  </div>
+                  {m.chips && (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 4,
+                        marginTop: 6,
+                      }}
+                    >
+                      {m.chips.map((c) => (
+                        <span
+                          key={c}
+                          onClick={() => {
+                            setChatInput(c);
+                            setTimeout(() => sendChat(), 100);
+                          }}
+                          style={{
+                            fontSize: 10,
+                            padding: "3px 8px",
+                            borderRadius: 20,
+                            background: "#252d3d",
+                            border: "1px solid #3a4460",
+                            color: "#55627a",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              padding: "10px 12px",
+              borderTop: "1px solid #2a3348",
+              background: "#161b27",
+            }}
+          >
+            <textarea
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Ask anything about this problem..."
+              rows={2}
+              style={{
+                flex: 1,
+                padding: "8px 11px",
+                background: "#1e2535",
+                border: "1px solid #2a3348",
+                borderRadius: 8,
+                color: "#e2e8f0",
+                fontSize: 12,
+                fontFamily: "'Space Grotesk', sans-serif",
+                outline: "none",
+                resize: "none",
+              }}
+            />
+            <button
+              onClick={sendChat}
+              style={{
+                padding: "8px 12px",
+                background: "#7c6fcd",
+                color: "#fff",
+                border: "none",
+                borderRadius: 8,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              ↗
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className="app"
       style={{
         display: "grid",
-        gridTemplateColumns: "260px 1fr 380px",
+        gridTemplateColumns: contentColumns,
         gridTemplateRows: "44px 1fr",
         height: "100vh",
         overflow: "hidden",
         background: "#0f1117",
         color: "#e2e8f0",
         fontFamily: "'Space Grotesk', sans-serif",
+        position: "relative",
       }}
     >
       {/* TOPBAR */}
@@ -1713,9 +2618,19 @@ export default function PairCoderAI() {
             alignItems: "center",
             gap: 10,
             padding: "0 16px",
+            minWidth: 0,
+            overflow: "hidden",
           }}
         >
-          <span style={{ fontSize: 12, fontWeight: 600 }}>
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
             {currentProb.name}
           </span>
           <span
@@ -1741,8 +2656,23 @@ export default function PairCoderAI() {
             alignItems: "center",
             gap: 6,
             paddingRight: 14,
+            flexShrink: 0,
           }}
         >
+          <button
+            style={sidebarToggleStyle(isSidebarOpen)}
+            onClick={() => setIsSidebarOpen((open) => !open)}
+            title={editorPrefs.docsTooltips ? "Toggle the problem list" : undefined}
+          >
+            ☰ Problems
+          </button>
+          <button
+            style={sidebarToggleStyle(isAiPanelOpen)}
+            onClick={() => setIsAiPanelOpen((open) => !open)}
+            title={editorPrefs.docsTooltips ? "Toggle the AI coach panel" : undefined}
+          >
+            🤖 Coach
+          </button>
           <button
             style={{
               padding: "5px 12px",
@@ -1755,6 +2685,7 @@ export default function PairCoderAI() {
               cursor: "pointer",
             }}
             onClick={() => setShowApiPanel(!showApiPanel)}
+            title={editorPrefs.docsTooltips ? "Configure live AI provider keys" : undefined}
           >
             🔑 {hasLiveAIProvider ? "API ✓" : "API ✗"}
           </button>
@@ -1770,6 +2701,7 @@ export default function PairCoderAI() {
               cursor: "pointer",
             }}
             onClick={() => setShowSettingsPanel(!showSettingsPanel)}
+            title={editorPrefs.docsTooltips ? "Editor and display preferences" : undefined}
           >
             ⚙️ Settings
           </button>
@@ -1784,9 +2716,29 @@ export default function PairCoderAI() {
               fontWeight: 600,
               cursor: "pointer",
             }}
-            onClick={() => setAiTab("chat")}
+            onClick={() => {
+              setAiTab("chat");
+              setIsAiPanelOpen(true);
+            }}
+            title={editorPrefs.docsTooltips ? "Ask the AI coach for a hint" : undefined}
           >
             💡 Hint
+          </button>
+          <button
+            onClick={saveCode}
+            style={{
+              padding: "5px 12px",
+              borderRadius: 7,
+              border: "1px solid #2a3348",
+              background: "#111827",
+              color: "#cbd5e1",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+            title={editorPrefs.docsTooltips ? "Save your current code" : undefined}
+          >
+            💾 Save
           </button>
           <button
             onClick={handleRun}
@@ -1800,6 +2752,7 @@ export default function PairCoderAI() {
               fontWeight: 600,
               cursor: "pointer",
             }}
+            title={editorPrefs.docsTooltips ? "Run code locally (Cmd+Enter / Ctrl+Enter)" : undefined}
           >
             ▶ Run
           </button>
@@ -2230,139 +3183,172 @@ export default function PairCoderAI() {
             </select>
           </div>
 
+          <div style={{ marginBottom: 16 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "#8892a4",
+                marginBottom: 8,
+              }}
+            >
+              Editor Experience
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gap: 8,
+                background: "#0f1117",
+                border: "1px solid #2a3348",
+                borderRadius: 8,
+                padding: 10,
+              }}
+            >
+              {[
+                ["autoCloseBrackets", "Autoclose brackets and quotes"],
+                ["autocomplete", "Code autocomplete"],
+                ["docsTooltips", "Docs tooltips"],
+                ["darkMode", "Dark mode"],
+                ["highContrastMode", "High contrast mode"],
+                ["showWhitespace", "Show whitespace characters"],
+              ].map(([key, label]) => (
+                <label
+                  key={key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    fontSize: 11,
+                    color: "#cbd5e1",
+                  }}
+                >
+                  <span>{label}</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean((editorPrefs as any)[key])}
+                    onChange={(e) => updateEditorPref(key, e.target.checked)}
+                  />
+                </label>
+              ))}
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  fontSize: 11,
+                  color: "#cbd5e1",
+                }}
+              >
+                <span>Disable word wrap</span>
+                <input
+                  type="checkbox"
+                  checked={!editorPrefs.wordWrap}
+                  onChange={(e) => updateEditorPref("wordWrap", !e.target.checked)}
+                />
+              </label>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  fontSize: 11,
+                  color: "#cbd5e1",
+                }}
+              >
+                <span>Code font size</span>
+                <select
+                  value={editorPrefs.fontSize}
+                  onChange={(e) => updateEditorPref("fontSize", e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#161b27",
+                    border: "1px solid #2a3348",
+                    borderRadius: 6,
+                    color: "#e2e8f0",
+                    fontSize: 11,
+                  }}
+                >
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
           <div style={{ fontSize: 9, color: "#55627a" }}>
-            Changes are saved automatically.
+            Changes are saved automatically and apply to this browser.
           </div>
         </div>
       )}
 
-      {/* SIDEBAR */}
-      <div
-        style={{
-          borderRight: "1px solid #2a3348",
-          background: "#161b27",
-          overflowY: "auto",
-        }}
-      >
-        <div
-          style={{
-            padding: "10px 12px 6px",
-            position: "sticky",
-            top: 0,
-            background: "#161b27",
-            zIndex: 5,
-            borderBottom: "1px solid #2a3348",
+      {showOverlayBackdrop && (
+        <button
+          type="button"
+          aria-label="Close sidebar overlays"
+          onClick={() => {
+            if (overlaySidebarVisible) setIsSidebarOpen(false);
+            if (overlayAiVisible) setIsAiPanelOpen(false);
           }}
+          style={{
+            position: "absolute",
+            top: 44,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            border: "none",
+            background: "rgba(5, 12, 20, 0.58)",
+            zIndex: 40,
+            cursor: "pointer",
+          }}
+        />
+      )}
+
+      {inlineSidebarVisible &&
+        sidebarPanel({
+          gridColumn: 1,
+          gridRow: 2,
+        })}
+
+      {inlineSidebarVisible && (
+        <div
+          onMouseDown={() => setActiveDrag("sidebar")}
+          style={{
+            ...resizeHandleStyle,
+            gridColumn: 2,
+            gridRow: 2,
+            zIndex: 20,
+          }}
+          title="Drag to resize the problem list"
         >
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: "#8892a4",
-              letterSpacing: "0.06em",
-            }}
-          >
-            Blind 75 · NeetCode
-          </div>
-          <input
-            style={{
-              width: "100%",
-              marginTop: 6,
-              padding: "5px 10px",
-              background: "#1e2535",
-              border: "1px solid #2a3348",
-              borderRadius: 7,
-              color: "#e2e8f0",
-              fontSize: 11,
-              outline: "none",
-            }}
-            placeholder="Search problems..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div style={resizeHandleRailStyle} />
         </div>
-        {filteredProblems.map((cat) => (
-          <div key={cat.cat}>
-            <div
-              style={{
-                padding: "8px 12px 3px",
-                fontSize: 10,
-                fontWeight: 700,
-                color: "#55627a",
-                letterSpacing: "0.06em",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <div
-                style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background: cat.color,
-                }}
-              />
-              {cat.cat}
-            </div>
-            {cat.problems.map((prob) => (
-              <div
-                key={prob.id}
-                onClick={() => loadProblem(prob, cat)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "5px 12px",
-                  cursor: "pointer",
-                  borderLeft:
-                    currentProb.id === prob.id
-                      ? "2px solid #a78bfa"
-                      : "2px solid transparent",
-                  background:
-                    currentProb.id === prob.id ? "#1e1b38" : "transparent",
-                  transition: "all 0.1s",
-                }}
-              >
-                <span style={{ fontSize: 10, color: "#55627a", minWidth: 22 }}>
-                  {solved.has(prob.id) ? "✓" : `#${prob.id}`}
-                </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: currentProb.id === prob.id ? "#e2e8f0" : "#8892a4",
-                    flex: 1,
-                    fontWeight: 500,
-                  }}
-                >
-                  {prob.name}
-                </span>
-                <div
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background:
-                      prob.diff === "Easy"
-                        ? "#22c55e"
-                        : prob.diff === "Medium"
-                          ? "#f59e0b"
-                          : "#ef4444",
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+      )}
+
+      {overlaySidebarVisible &&
+        sidebarPanel({
+          position: "absolute",
+          top: 44,
+          bottom: 0,
+          left: 0,
+          width: overlaySidebarWidth,
+          zIndex: 60,
+          boxShadow: "18px 0 40px rgba(0,0,0,0.45)",
+        })}
 
       {/* EDITOR */}
       <div
         style={{
+          gridColumn: 3,
+          gridRow: 2,
           display: "flex",
           flexDirection: "column",
           background: "#0f1117",
           overflow: "hidden",
+          minWidth: 0,
         }}
       >
         <div
@@ -2410,6 +3396,7 @@ export default function PairCoderAI() {
           <select
             value={language}
             onChange={(e) => setLanguage(e.target.value)}
+            title={editorPrefs.docsTooltips ? "Choose the coding language" : undefined}
             style={{
               marginLeft: "auto",
               padding: "3px 8px",
@@ -2440,14 +3427,23 @@ export default function PairCoderAI() {
               display: editorTab === "code" ? "block" : "none",
               height: "100%",
             }}
+            onKeyDownCapture={handleEditorKeyDown}
           >
             <CodeMirror
               value={code}
               height="100%"
-              theme={vscodeDark}
+              theme={editorPrefs.darkMode ? vscodeDark : undefined}
               extensions={getExtensions()}
+              basicSetup={{
+                autocompletion: editorPrefs.autocomplete,
+                closeBrackets: editorPrefs.autoCloseBrackets,
+                highlightSpecialChars: editorPrefs.showWhitespace,
+              }}
               onChange={handleEditorChange}
-              style={{ fontSize: 13, height: "100%" }}
+              style={{
+                fontSize: FONT_SIZE_MAP[editorPrefs.fontSize] || 15,
+                height: "100%",
+              }}
             />
           </div>
           <div
@@ -2483,264 +3479,61 @@ export default function PairCoderAI() {
             padding: 12,
             borderTop: "1px solid #2a3348",
             background: "#161b27",
-            maxHeight: 160,
-            overflowY: "auto",
+            display: "grid",
+            gridTemplateColumns: runnerGridColumns,
+            gap: 12,
           }}
         >
           <div
             style={{
-              fontSize: 10,
-              fontWeight: 700,
-              color: "#55627a",
-              letterSpacing: "0.05em",
-              marginBottom: 6,
-            }}
-          >
-            Test Cases
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              fontFamily: "'JetBrains Mono', monospace",
-              color: "#22c55e",
-            }}
-          >
-            ✓ [2,7,11,15], target=9 → [0,1]
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              fontFamily: "'JetBrains Mono', monospace",
-              color: "#22c55e",
-            }}
-          >
-            ✓ [3,2,4], target=6 → [1,2]
-          </div>
-        </div>
-      </div>
-
-      {/* AI PANEL */}
-      <div
-        style={{
-          borderLeft: "1px solid #2a3348",
-          background: "#161b27",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "10px 14px",
-            borderBottom: "1px solid #2a3348",
-          }}
-        >
-          <div
-            style={{
-              width: 26,
-              height: 26,
-              borderRadius: "50%",
-              background: "linear-gradient(135deg,#7c6fcd,#a78bfa)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 11,
-              fontWeight: 700,
-              color: "#fff",
-            }}
-          >
-            AI
-          </div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>Pair Coder</div>
-            <div style={{ fontSize: 10, color: "#55627a" }}>
-              Visual Teacher · Always watching
-            </div>
-          </div>
-          <div
-            style={{
-              marginLeft: "auto",
-              fontSize: 10,
-              color: "#14b8a6",
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
+              minWidth: 0,
             }}
           >
             <div
               style={{
-                width: 5,
-                height: 5,
-                borderRadius: "50%",
-                background: "#14b8a6",
-                animation: "pulse 1.5s ease-in-out infinite",
+                fontSize: 10,
+                fontWeight: 700,
+                color: "#55627a",
+                letterSpacing: "0.05em",
+                marginBottom: 6,
+              }}
+            >
+              stdin
+            </div>
+            <div style={{ fontSize: 10, color: "#8892a4", marginBottom: 6 }}>
+              Input for the program (optional)
+            </div>
+            <textarea
+              value={runnerStdin}
+              onChange={(e) => setRunnerStdin(e.target.value)}
+              placeholder="42\nhello world"
+              style={{
+                width: "100%",
+                minHeight: 92,
+                resize: "vertical",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #2a3348",
+                background: "#0f1117",
+                color: "#e2e8f0",
+                fontSize: 12,
+                fontFamily: "'JetBrains Mono', monospace",
+                outline: "none",
               }}
             />
-            Active
           </div>
-        </div>
-        <div style={{ display: "flex", borderBottom: "1px solid #2a3348" }}>
-          {["visual", "chat"].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setAiTab(tab)}
-              style={{
-                flex: 1,
-                padding: "8px 6px",
-                fontSize: 11,
-                fontWeight: 600,
-                color: aiTab === tab ? "#a78bfa" : "#55627a",
-                borderBottom:
-                  aiTab === tab ? "2px solid #7c6fcd" : "2px solid transparent",
-                background: "transparent",
-                border: "none",
-                borderTop: 0,
-                borderLeft: 0,
-                borderRight: 0,
-                cursor: "pointer",
-              }}
-            >
-              {tab === "visual"
-                ? "📖 Guide"
-                : "💬 Chat"}
-            </button>
-          ))}
-        </div>
-
-        {/* VISUAL GUIDE TAB */}
-        {aiTab === "visual" && (
           <div
             style={{
-              display: "flex",
-              flexDirection: "column",
-              flex: 1,
-              overflow: "hidden",
+              minWidth: 0,
             }}
           >
             <div
               style={{
                 display: "flex",
-                gap: 4,
-                padding: "10px 12px",
-                borderBottom: "1px solid #2a3348",
-                flexWrap: "wrap",
-              }}
-            >
-              {guide.steps.map((s, i) => (
-                <div
-                  key={i}
-                  onClick={() => setCurrentStep(i)}
-                  style={{
-                    padding: "4px 10px",
-                    borderRadius: 20,
-                    fontSize: 10,
-                    fontWeight: 700,
-                    border: "1px solid #3a4460",
-                    color: currentStep === i ? "#a78bfa" : "#55627a",
-                    background: currentStep === i ? "#1e1b38" : "transparent",
-                    cursor: "pointer",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {s.label}
-                </div>
-              ))}
-            </div>
-            <div
-              style={{
-                flex: 1,
-                overflow: "hidden",
-                position: "relative",
-                background: "#0f1117",
-                margin: 10,
-                borderRadius: 10,
-                border: "1px solid #2a3348",
-                display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <div
-                style={{
-                  padding: 18,
-                  width: "100%",
-                  height: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "center",
-                  gap: 10,
-                }}
-              >
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 10,
-                    letterSpacing: "0.05em",
-                    textTransform: "uppercase",
-                    color: "#a78bfa",
-                    background: "#1e2535",
-                    border: "1px solid #2a3348",
-                    padding: "6px 10px",
-                    borderRadius: 999,
-                    width: "fit-content",
-                  }}
-                >
-                  {hasLiveAIProvider ? "Live AI Guide" : "Local Coach"}
-                  <span style={{ color: "#55627a" }}>
-                    · Step {currentStep + 1} of {guide.steps.length}
-                  </span>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
-                  {guide.steps[currentStep]?.label}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "'JetBrains Mono', monospace",
-                    fontSize: 11,
-                    lineHeight: 1.6,
-                    whiteSpace: "pre-wrap",
-                    color: "#9ae6b4",
-                    background: "#0b1220",
-                    border: "1px solid #1f2937",
-                    borderRadius: 8,
-                    padding: 12,
-                    minHeight: 120,
-                  }}
-                >
-                  {buildAsciiSnapshot()}
-                </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    background: "#0f1117",
-                    border: "1px solid #2a3348",
-                    borderRadius: 8,
-                    padding: 12,
-                  }}
-                >
-                  <div className="streamdown-shell">
-                    <Streamdown
-                      parseIncompleteMarkdown
-                      className="streamdown-body"
-                    >
-                      {normalizeCoachMarkdown(
-                        coachFeedback || guide.steps[currentStep]?.explain || "",
-                      )}
-                    </Streamdown>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div
-              style={{
-                padding: "10px 14px",
-                borderTop: "1px solid #2a3348",
-                background: "#161b27",
+                justifyContent: "space-between",
+                gap: 10,
+                marginBottom: 6,
               }}
             >
               <div
@@ -2749,233 +3542,97 @@ export default function PairCoderAI() {
                   fontWeight: 700,
                   color: "#55627a",
                   letterSpacing: "0.05em",
-                  marginBottom: 3,
                 }}
               >
-                Teacher observing
+                Output
               </div>
               <div
                 style={{
-                  fontSize: 12,
-                  color: "#8892a4",
+                  fontSize: 11,
+                  color:
+                    runnerStatus === "error"
+                      ? "#f87171"
+                      : runnerStatus === "success"
+                        ? "#4ade80"
+                        : runnerStatus === "unsupported"
+                          ? "#facc15"
+                          : "#94a3b8",
+                  fontFamily: "'JetBrains Mono', monospace",
                 }}
               >
-                <div className="streamdown-shell streamdown-shell-muted">
-                  <Streamdown
-                    parseIncompleteMarkdown
-                    className="streamdown-body"
-                  >
-                    {normalizeCoachMarkdown(
-                      coachFeedback || guide.steps[currentStep]?.explain || "",
-                    )}
-                  </Streamdown>
-                </div>
+                {runnerMeta}
               </div>
             </div>
-          </div>
-        )}
-
-        {/* CHAT TAB */}
-        {aiTab === "chat" && (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              flex: 1,
-              overflow: "hidden",
-            }}
-          >
             <div
               style={{
-                flex: 1,
-                overflowY: "auto",
-                padding: 12,
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-              }}
-            >
-              {chatMsgs.length === 0 && (
-
-                  <div
-                    style={{
-                      maxWidth: "85%",
-                      padding: "8px 11px",
-                      borderRadius: 10,
-                      background: "#1e2535",
-                      border: "1px solid #2a3348",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    I'm your <strong>AI Pair Coder</strong>. I'll watch your
-                    code and guide you visually through every Blind 75 pattern.
-                    <div
-                      style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        gap: 4,
-                        marginTop: 6,
-                      }}
-                    >
-                      {[
-                        "Explain pattern",
-                        "Visual guide",
-                        "What pattern?",
-                        "I'm stuck",
-                      ].map((c) => (
-                        <span
-                          key={c}
-                          onClick={() => {
-                            setChatInput(c);
-                            setTimeout(() => sendChat(), 100);
-                          }}
-                          style={{
-                            fontSize: 10,
-                            padding: "3px 8px",
-                            borderRadius: 20,
-                            background: "#252d3d",
-                            border: "1px solid #3a4460",
-                            color: "#55627a",
-                            cursor: "pointer",
-                          }}
-                        >
-                          {c}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-              )}
-              {chatMsgs.map((m, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    flexDirection: m.role === "user" ? "row-reverse" : "row",
-                    alignItems: "flex-start",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: "50%",
-                      background:
-                        m.role === "ai"
-                          ? "linear-gradient(135deg,#7c6fcd,#a78bfa)"
-                          : "#252d3d",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 9,
-                      fontWeight: 700,
-                      color: "#fff",
-                    }}
-                  >
-                    {m.role === "ai" ? "AI" : "U"}
-                  </div>
-                  <div
-                    style={{
-                      maxWidth: "85%",
-                      padding: "8px 11px",
-                      borderRadius: 10,
-                      background: m.role === "ai" ? "#1e2535" : "#1e1b38",
-                      border: "1px solid #2a3348",
-                      color: "#e2e8f0",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    <div className="streamdown-shell">
-                      <Streamdown
-                        parseIncompleteMarkdown
-                        className="streamdown-body"
-                      >
-                        {normalizeCoachMarkdown(m.text || "")}
-                      </Streamdown>
-                    </div>
-                    {m.chips && (
-                      <div
-                        style={{
-                          display: "flex",
-                          flexWrap: "wrap",
-                          gap: 4,
-                          marginTop: 6,
-                        }}
-                      >
-                        {m.chips.map((c) => (
-                          <span
-                            key={c}
-                            onClick={() => {
-                              setChatInput(c);
-                              setTimeout(() => sendChat(), 100);
-                            }}
-                            style={{
-                              fontSize: 10,
-                              padding: "3px 8px",
-                              borderRadius: 20,
-                              background: "#252d3d",
-                              border: "1px solid #3a4460",
-                              color: "#55627a",
-                              cursor: "pointer",
-                            }}
-                          >
-                            {c}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 6,
+                borderRadius: 8,
+                border: "1px solid #2a3348",
+                background: "#0b1220",
                 padding: "10px 12px",
-                borderTop: "1px solid #2a3348",
-                background: "#161b27",
+                minHeight: 118,
+                whiteSpace: "pre-wrap",
+                fontSize: 12,
+                lineHeight: 1.6,
+                color:
+                  runnerStatus === "error"
+                    ? "#fca5a5"
+                    : runnerStatus === "unsupported"
+                      ? "#fde68a"
+                      : "#d1fae5",
+                fontFamily: "'JetBrains Mono', monospace",
+                overflowX: "auto",
               }}
             >
-              <textarea
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Ask anything about this problem..."
-                rows={2}
-                style={{
-                  flex: 1,
-                  padding: "8px 11px",
-                  background: "#1e2535",
-                  border: "1px solid #2a3348",
-                  borderRadius: 8,
-                  color: "#e2e8f0",
-                  fontSize: 12,
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  outline: "none",
-                  resize: "none",
-                }}
-              />
-              <button
-                onClick={sendChat}
-                style={{
-                  padding: "8px 12px",
-                  background: "#7c6fcd",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 8,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                ↗
-              </button>
+              {runnerStdout}
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                fontSize: 10,
+                color: "#64748b",
+              }}
+            >
+              <span>{lastSavedAt ? `Saved at ${lastSavedAt}` : "Not saved yet"}</span>
+              <span>Cmd+Enter / Ctrl+Enter to run</span>
             </div>
           </div>
-        )}
+        </div>
       </div>
+
+      {inlineAiVisible && (
+        <div
+          onMouseDown={() => setActiveDrag("ai")}
+          style={{
+            ...resizeHandleStyle,
+            gridColumn: 4,
+            gridRow: 2,
+            zIndex: 20,
+          }}
+          title="Drag to resize the AI coach panel"
+        >
+          <div style={resizeHandleRailStyle} />
+        </div>
+      )}
+
+      {inlineAiVisible &&
+        aiPanel({
+          gridColumn: 5,
+          gridRow: 2,
+        })}
+
+      {overlayAiVisible &&
+        aiPanel({
+          position: "absolute",
+          top: 44,
+          right: 0,
+          bottom: 0,
+          width: overlayAiWidth,
+          zIndex: 60,
+          boxShadow: "-18px 0 40px rgba(0,0,0,0.45)",
+        })}
 
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
