@@ -1,13 +1,14 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import { EditorView } from "@codemirror/view";
+import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { java } from "@codemirror/lang-java";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 import {
+  type AIResponse,
   getDSAGuidance,
   getRuntimeApiKeys,
   setRuntimeApiKeys,
@@ -968,11 +969,65 @@ const MAX_LEFT_PANEL_WIDTH = 360;
 const MIN_RIGHT_PANEL_WIDTH = 300;
 const MAX_RIGHT_PANEL_WIDTH = 460;
 
+const MemoCodeEditor = React.memo(function MemoCodeEditor({
+  initialValue,
+  darkMode,
+  extensions,
+  autocomplete,
+  autoCloseBrackets,
+  showWhitespace,
+  fontSize,
+  onDocChange,
+  onRun,
+}: {
+  initialValue: string;
+  darkMode: boolean;
+  extensions: any[];
+  autocomplete: boolean;
+  autoCloseBrackets: boolean;
+  showWhitespace: boolean;
+  fontSize: number;
+  onDocChange: (value: string) => void;
+  onRun: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+}) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "block",
+        height: "100%",
+      }}
+      onKeyDownCapture={onRun}
+    >
+      <CodeMirror
+        value={initialValue}
+        height="100%"
+        theme={darkMode ? vscodeDark : undefined}
+        extensions={extensions}
+        basicSetup={{
+          autocompletion: autocomplete,
+          closeBrackets: autoCloseBrackets,
+          highlightSpecialChars: showWhitespace,
+        }}
+        onUpdate={(viewUpdate: ViewUpdate) => {
+          if (viewUpdate.docChanged) {
+            onDocChange(viewUpdate.state.doc.toString());
+          }
+        }}
+        style={{
+          fontSize,
+          height: "100%",
+        }}
+      />
+    </div>
+  );
+});
+
 export default function PairCoderAI() {
   const [problems] = useState(BLIND75);
   const [currentProb, setCurrentProb] = useState(BLIND75[0].problems[0]);
   const [currentCat, setCurrentCat] = useState(BLIND75[0]);
-  const [code, setCode] = useState("");
+  const [editorCode, setEditorCode] = useState("");
   const [language, setLanguage] = useState("javascript");
   const [editorTab, setEditorTab] = useState("code");
   const [solved, setSolved] = useState(new Set());
@@ -1002,6 +1057,7 @@ export default function PairCoderAI() {
   const [visualType, setVisualType] = useState<string>("array");
   const [visualData, setVisualData] = useState<any>(null);
   const [coachFeedback, setCoachFeedback] = useState("");
+  const [coachState, setCoachState] = useState<AIResponse | null>(null);
   const [editorPrefs, setEditorPrefs] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_EDITOR_PREFS;
     try {
@@ -1022,7 +1078,6 @@ export default function PairCoderAI() {
   >("idle");
   const [runnerMeta, setRunnerMeta] = useState("Press Cmd+Enter or Ctrl+Enter to run.");
   const [lastSavedAt, setLastSavedAt] = useState<string>("");
-  const liveCoachTimer = useRef<any>(null);
   const [viewportWidth, setViewportWidth] = useState(
     typeof window === "undefined" ? 1440 : window.innerWidth,
   );
@@ -1056,65 +1111,14 @@ export default function PairCoderAI() {
     difficulty: "Easy",
   });
 
-  // Debug: Check API status
-  console.log("🔑 hasConfiguredLiveProvider():", hasConfiguredLiveProvider());
-  console.log(
-    "🔑 groq key from env:",
-    process.env.GROQ_API_KEY ? "exists" : "missing",
-  );
-
   const codeRef = useRef<string>("");
+  const liveCoachRequestRef = useRef(0);
+  const skipNextLiveCoachRef = useRef(true);
 
   const handleEditorChange = useCallback((value: string) => {
+    setEditorCode(value);
     codeRef.current = value;
-
-    // DEBOUNCE code state update to 500ms
-    const debounceTimer = (window as any)._codeDebounce;
-    if (debounceTimer) clearTimeout(debounceTimer);
-
-    (window as any)._codeDebounce = setTimeout(() => {
-      setCode(value);
-    }, 500);
   }, []);
-
-  // Live guidance while typing (debounced)
-  useEffect(() => {
-    if (liveCoachTimer.current) clearTimeout(liveCoachTimer.current);
-    liveCoachTimer.current = setTimeout(async () => {
-      try {
-        const fullProblemData = PROBLEM_DATA[currentProb.slug];
-        if (!fullProblemData) return;
-
-        const problemData = {
-          title: currentProb.name,
-          description: fullProblemData.desc,
-          difficulty: currentProb.diff,
-          guide: fullProblemData.guide,
-          constraints: fullProblemData.constraints || [],
-          edgeCases: fullProblemData.edgeCases || [],
-          sampleData: fullProblemData.sampleData || {},
-        };
-
-        const result = await getDSAGuidance(
-          problemData,
-          codeRef.current,
-          "live-keystroke",
-          "coding",
-          chatMsgs.slice(-4),
-          {},
-          true,
-        );
-
-        applyGuidanceResult(result, fullProblemData);
-      } catch (err) {
-        console.error("❌ Live guidance error:", err);
-      }
-    }, 900);
-
-    return () => {
-      if (liveCoachTimer.current) clearTimeout(liveCoachTimer.current);
-    };
-  }, [code, language, currentProb, chatMsgs]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1188,7 +1192,7 @@ export default function PairCoderAI() {
     };
   }, [activeDrag]);
 
-  const getExtensions = () => {
+  const editorExtensions = useMemo(() => {
     // 15 lines x approx 20px = 300px scroll margin
     const scrollPadding = EditorView.scrollMargins.of(() => ({
       top: 15 * 20,
@@ -1205,17 +1209,21 @@ export default function PairCoderAI() {
           fontFamily: "'JetBrains Mono', monospace",
         },
         ".cm-cursor": {
-          borderLeft: "none !important",
+          borderLeft: "2px solid transparent !important",
+          borderBottom: "none !important",
+          width: "0 !important",
+          position: "relative",
+        },
+        ".cm-cursor::after": {
+          content: '""',
+          position: "absolute",
+          left: 0,
+          bottom: 0,
+          width: "0.55em",
           borderBottom: `2.5px solid ${
             editorPrefs.highContrastMode ? "#facc15" : "#a78bfa"
-          } !important`,
-          transition: "left 0.12s ease-out, top 0.1s ease-out",
-          width: "0.55em !important",
-          height: "1.25em !important",
-          marginTop: "-1px !important",
-        },
-        ".cm-cursorLayer": {
-          animation: "cm-blink-phase 1.2s ease-in-out infinite",
+          }`,
+          pointerEvents: "none",
         },
         ".cm-content": {
           caretColor: editorPrefs.highContrastMode ? "#facc15" : "#a78bfa",
@@ -1244,27 +1252,58 @@ export default function PairCoderAI() {
     if (language === "javascript") exts.push(javascript());
     if (language === "java") exts.push(java());
     return exts;
-  };
+  }, [editorPrefs, language]);
 
   const guide =
     aiGuide || PROBLEM_DATA[currentProb.slug]?.guide || DEFAULT_GUIDE;
-  console.log("📋 Guide check:", {
-    slug: currentProb.slug,
-    hasAiGuide: !!aiGuide,
-    hasProblemGuide: !!PROBLEM_DATA[currentProb.slug]?.guide,
-    guideTitle: guide?.title,
-    firstStepLabel: guide?.steps?.[0]?.label,
-    firstStepExplain: guide?.steps?.[0]?.explain?.slice(0, 50),
-  });
+  const guideTitleParts = (guide.title || "")
+    .split("—")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const fallbackPatternName =
+    guideTitleParts[1] || guideTitleParts[0] || "Problem-solving pattern";
+  const coachPattern = coachState?.patternInfo || null;
+  const coachLearningGuide = coachState?.learningGuide || null;
+  const coachHints = (coachState?.hints || []).filter(Boolean);
+  const coachStageLabel = coachState?.stage
+    ? coachState.stage.charAt(0).toUpperCase() + coachState.stage.slice(1)
+    : "Thinking";
+  const coachOverview =
+    coachFeedback ||
+    coachState?.feedback ||
+    guide.steps[0]?.explain ||
+    DEFAULT_GUIDE.steps[0].explain;
+  const coachInvariant =
+    coachLearningGuide?.invariant ||
+    "Preserve the invariant and only store the state needed for the next move.";
+  const coachNextStep =
+    coachLearningGuide?.nextStep ||
+    coachHints[0] ||
+    guide.steps[1]?.explain ||
+    coachOverview;
+  const coachCheckpoints =
+    coachLearningGuide?.checkpoints?.filter(Boolean) || coachHints.slice(0, 3);
+  const coachProviderLabel =
+    coachState?.providerStatus === "live"
+      ? "Live AI Coach"
+      : coachState?.providerStatus === "fallback" || coachState?.provider === "local"
+        ? "Local Coach"
+        : hasLiveAIProvider
+          ? "Live AI Coach"
+          : "Local Coach";
 
-  const filteredProblems = problems
-    .map((cat) => ({
-      ...cat,
-      problems: cat.problems.filter((p) =>
-        p.name.toLowerCase().includes(search.toLowerCase()),
-      ),
-    }))
-    .filter((cat) => cat.problems.length > 0);
+  const filteredProblems = useMemo(
+    () =>
+      problems
+        .map((cat) => ({
+          ...cat,
+          problems: cat.problems.filter((p) =>
+            p.name.toLowerCase().includes(search.toLowerCase()),
+          ),
+        }))
+        .filter((cat) => cat.problems.length > 0),
+    [problems, search],
+  );
 
   const diffColor =
     currentProb.diff === "Easy"
@@ -1274,8 +1313,13 @@ export default function PairCoderAI() {
         : "#ef4444";
 
   const buildAsciiSnapshot = () => {
-    const stepLabel = guide.steps[currentStep]?.label || "Thinking";
-    const lines = [`Problem: ${currentProb.name}`, `Step: ${stepLabel}`, ""];
+    const patternLabel = coachPattern?.name || fallbackPatternName;
+    const lines = [
+      `Problem: ${currentProb.name}`,
+      `Pattern: ${patternLabel}`,
+      `Stage: ${coachStageLabel}`,
+      "",
+    ];
     const data = visualData || {};
 
     if (visualType === "array" && Array.isArray(data.items) && data.items.length > 0) {
@@ -1420,6 +1464,33 @@ export default function PairCoderAI() {
     };
   };
 
+  const runCodeWithBackend = async (source: string, stdin: string) => {
+    const response = await fetch("/api/run", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        language,
+        source,
+        stdin,
+      }),
+    });
+
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.stderr || payload.error || "Execution failed.");
+    }
+
+    return payload as {
+      ok: boolean;
+      stdout: string;
+      stderr: string;
+      meta: string;
+    };
+  };
+
   const getStarterCode = (slug: string, lang: string, probName: string) => {
     const problem = PROBLEM_DATA[slug];
     if (problem?.starter?.[lang]) {
@@ -1436,6 +1507,8 @@ export default function PairCoderAI() {
   // Helper: map AI response to guide/visuals
   const applyGuidanceResult = (result: any, fullProblemData: any) => {
     if (!result) return;
+
+    setCoachState(result);
 
     // Update visuals if present
     const visType = result.visualType ?? result.visualizationData?.visualType;
@@ -1459,29 +1532,6 @@ export default function PairCoderAI() {
       }
     }
 
-    // Build guide steps from hints/feedback
-    if ((result.hints && result.hints.length > 0) || result.feedback) {
-      let aiSteps: { label: string; explain: string }[] = [];
-      if (result.hints && result.hints.length > 0) {
-        const standardLabels = ["Brute Force", "Key Insight", "One Pass", "Example Trace", "Complexity"];
-        aiSteps = result.hints.slice(0, 5).map((hint: string, i: number) => ({
-          label: standardLabels[i] || `Step ${i + 1}`,
-          explain: hint.trim(),
-        }));
-      } else if (result.feedback) {
-        aiSteps = [
-          { label: "Analysis", explain: result.feedback.trim() },
-          { label: "Key Insight", explain: "Look for patterns or optimizations based on the problem constraints." },
-          { label: "One Pass", explain: "Consider if you can solve this in a single pass through the data." },
-          { label: "Example Trace", explain: "Walk through a small example to verify your approach." },
-          { label: "Complexity", explain: "Analyze the time and space complexity of your solution." },
-        ];
-      }
-      setAiGuide({ steps: aiSteps });
-      return;
-    }
-
-    // Fallbacks
     if (fullProblemData?.guide) {
       setAiGuide(fullProblemData.guide);
     } else {
@@ -1533,26 +1583,82 @@ export default function PairCoderAI() {
     const starter =
       savedCode || getStarterCode(currentProb.slug, language, currentProb.name);
 
-    console.log(
-      "📂 Loading code for",
-      currentProb.slug,
-      "- saved:",
-      savedCode ? "YES" : "NO (using starter)",
-    );
-
-    setCode(starter);
+    setEditorCode(starter);
     codeRef.current = starter;
     setCurrentStep(0);
     setAiGuide(null);
     setVisualData(null);
     setVisualType("array");
     setCoachFeedback("");
+    setCoachState(null);
+    skipNextLiveCoachRef.current = true;
 
     // Always fetch a fresh guide. getDSAGuidance will fall back to the
     // built-in local coach when no live API keys are configured, so users
     // still get tailored steps instead of the generic placeholder.
     fetchAIGuide(currentProb.slug);
   }, [currentProb, language, hasLiveAIProvider, fetchAIGuide]);
+
+  useEffect(() => {
+    if (skipNextLiveCoachRef.current) {
+      skipNextLiveCoachRef.current = false;
+      return;
+    }
+
+    const source = editorCode.trim();
+    if (!source) return;
+
+    const requestId = ++liveCoachRequestRef.current;
+    const problemSlug = currentProb.slug;
+    const fullProblemData = PROBLEM_DATA[problemSlug];
+    if (!fullProblemData) return;
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const problemData = {
+          title: currentProb.name,
+          description: fullProblemData.desc || "",
+          difficulty: currentProb.diff,
+          starterCode: fullProblemData?.starter?.[language] || "",
+          constraints: fullProblemData?.constraints || [],
+          edgeCases: fullProblemData?.edgeCases || [],
+          sampleData: fullProblemData?.sampleData || {},
+          guide: fullProblemData?.guide || null,
+        };
+
+        const result = await getDSAGuidance(
+          problemData,
+          editorCode,
+          "live-keystroke",
+          "coding",
+          chatMsgs
+            .slice(-6)
+            .map((msg: any) => ({
+              role: msg.role === "ai" ? "ai" : "user",
+              content: msg.text || "",
+            })),
+          { stdin: runnerStdin, language },
+          true,
+        );
+
+        if (liveCoachRequestRef.current !== requestId) return;
+        applyGuidanceResult(result, fullProblemData);
+      } catch (error) {
+        if (liveCoachRequestRef.current !== requestId) return;
+        console.error("❌ Live coach refresh failed:", error);
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    editorCode,
+    currentProb.slug,
+    currentProb.name,
+    currentProb.diff,
+    language,
+    runnerStdin,
+    chatMsgs,
+  ]);
 
   const loadProblem = (prob, cat) => {
     setCurrentProb(prob);
@@ -1564,7 +1670,6 @@ export default function PairCoderAI() {
 
   const submitProblem = () => {
     setSolved((s) => new Set([...s, currentProb.id]));
-    console.log("Submitting code:", codeRef.current);
   };
 
   const saveApiKeys = () => {
@@ -1595,89 +1700,12 @@ export default function PairCoderAI() {
     setIsTestingApi(false);
   };
 
-  const getAIResponse = (question: string) => {
-    const q = question.toLowerCase();
-    const probSlug = currentProb.slug;
-    const probName = currentProb.name;
-    const totalSteps = guide.steps.length;
-
-    // Pattern questions - guide to first step
-    if (q.includes("pattern")) {
-      return {
-        text: `Let me show you the approach! Instead of jumping to code, let's think through it step by step. Click <strong>Next (▶)</strong> to see how to approach this problem.`,
-        chips: ["Show step 1", "Give me a small hint", "What data structure?"],
-        action: "visual",
-        step: 0,
-      };
-    }
-
-    // Brute force questions - show the inefficient way first
-    if (q.includes("brute")) {
-      const bfStep = guide.steps.find((s: any) =>
-        s.label.toLowerCase().includes("brute"),
-      );
-      return {
-        text: bfStep
-          ? `<strong>Brute Force:</strong> ${bfStep.explain}`
-          : `For ${probName}, start with the most basic approach. Think about how to solve it without any optimized data structures!`,
-        chips: ["Show me the logic", "How to optimize?", "Next step"],
-        action: "visual",
-        step: 0,
-      };
-    }
-
-    // Hint questions - give small nudge, not answer
-    if (q.includes("hint")) {
-      const hintStep = guide.steps[1] || guide.steps[0];
-      return {
-        text: `<strong>Hint:</strong> ${hintStep.explain}`,
-        chips: ["Tell me more", "Show visualization", "Next step"],
-        action: "visual",
-        step: 1,
-      };
-    }
-
-    // "I don't know" - encourage them
-    if (q.includes("don't know") || q.includes("stuck") || q.includes("help")) {
-      return {
-        text: `That's totally fine! Let's break it down together. Click <strong>Next</strong> and I'll show you one small step at a time. You got this!`,
-        chips: ["Show step 1", "I need more help", "Show final answer"],
-        action: "visual",
-        step: 0,
-      };
-    }
-
-    // Show step - advance one step
-    if (q.includes("step")) {
-      const stepMatch = q.match(/step\s*(\d+)/);
-      const targetStep = stepMatch
-        ? parseInt(stepMatch[1]) - 1
-        : currentStep + 1;
-      const safeStep = Math.min(Math.max(0, targetStep), totalSteps - 1);
-      return {
-        text: `Here's step ${safeStep + 1}: ${guide.steps[safeStep]?.explain || "Keep going!"}`,
-        chips: ["Next step", "I don't get it", "Show final answer"],
-        action: "visual",
-        step: safeStep,
-      };
-    }
-
-    // Default - encourage learning
-    return {
-      text: `Great question! Let me guide you through this step by step. Click <strong>Next</strong> to see each step of the solution approach.`,
-      chips: ["Start learning", "Give me a hint", "What pattern?"],
-      action: "visual",
-      step: 0,
-    };
-  };
-
   // Save code to localStorage
   const saveCode = () => {
     if (typeof window === "undefined") return;
     const key = `dsa-code-${currentProb.slug}-${language}`;
     window.localStorage.setItem(key, codeRef.current);
     setLastSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-    console.log("💾 Code saved for", currentProb.slug);
   };
 
   // Load saved code from localStorage
@@ -1704,20 +1732,26 @@ export default function PairCoderAI() {
           setRunnerStdout(runResult.stdout);
           setRunnerMeta(runResult.meta);
         } else {
-          setRunnerStatus("unsupported");
-          setRunnerStdout(
-            `Local execution is currently available for JavaScript only.\n\nSelected language: ${language}\nYou can still save code, use AI review, and I can add a backend runner for Python/Java next.`,
-          );
-          setRunnerMeta("No local runtime attached");
+          const runResult = await runCodeWithBackend(codeRef.current, runnerStdin);
+          setRunnerStatus(runResult.ok ? "success" : "error");
+          setRunnerStdout(runResult.stderr ? `${runResult.stderr}\n\n${runResult.stdout}`.trim() : runResult.stdout);
+          setRunnerMeta(runResult.meta);
         }
       } catch (runError) {
-        setRunnerStatus("error");
-        setRunnerStdout(
+        const message =
           runError instanceof Error
             ? runError.message
-            : "Code execution failed unexpectedly.",
+            : "Code execution failed unexpectedly.";
+        const unsupportedRuntime =
+          message.includes("not installed") ||
+          message.includes("not available") ||
+          message.includes("not configured");
+
+        setRunnerStatus(unsupportedRuntime ? "unsupported" : "error");
+        setRunnerStdout(
+          message,
         );
-        setRunnerMeta("Execution error");
+        setRunnerMeta(unsupportedRuntime ? "Runtime unavailable" : "Execution error");
       }
 
       const problemSlug = currentProb.slug;
@@ -1818,112 +1852,77 @@ export default function PairCoderAI() {
     setIsAIThinking(false);
   };
 
-  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      event.preventDefault();
-      handleRun();
-    }
-  };
+  const handleEditorKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        handleRun();
+      }
+    },
+    [handleRun],
+  );
 
   const sendChat = async () => {
     if (!chatInput.trim()) return;
     const userQ = chatInput;
-    setChatMsgs([...chatMsgs, { role: "user", text: userQ }]);
+    setChatMsgs((msgs) => [...msgs, { role: "user", text: userQ }]);
     setChatInput("");
     setIsAIThinking(true);
+    try {
+      const problemSlug = currentProb.slug;
+      const fullProblemData = PROBLEM_DATA[problemSlug];
 
-    // If they have API keys, use the real AI
-    if (hasLiveAIProvider) {
-      try {
-        // Analyze their code
-        const problemSlug = currentProb.slug;
-        const fullProblemData = PROBLEM_DATA[problemSlug];
+      const problemData = {
+        title: currentProb.name,
+        description: fullProblemData?.desc || "",
+        difficulty: currentProb.diff,
+        starterCode: fullProblemData?.starter?.[language] || "",
+        constraints: fullProblemData?.constraints || [],
+        edgeCases: fullProblemData?.edgeCases || [],
+        sampleData: fullProblemData?.sampleData || {},
+        guide: fullProblemData?.guide || null,
+      };
 
-        const problemData = {
-          title: currentProb.name,
-          description: fullProblemData?.desc || "",
-          difficulty: currentProb.diff,
-          starterCode: fullProblemData?.starter?.[language] || "",
-          constraints: [],
-          edgeCases: [],
-          sampleData: {},
-          guide: fullProblemData?.guide || null,
-        };
+      const result = await getDSAGuidance(
+        problemData,
+        codeRef.current,
+        "user-chat",
+        "coding",
+        [...chatMsgs, { role: "user" as const, content: userQ }],
+        {},
+        false,
+      );
 
-        const result = await getDSAGuidance(
-          problemData,
-          codeRef.current,
-          "user-chat",
-          "coding",
-          [...chatMsgs, { role: "user" as const, content: userQ }],
-          {},
-          false, // isLiveKeystroke
-        );
+      const feedback = result.feedback || "Let me check your code...";
+      const hints = (result.hints || []).filter(Boolean);
+      const visType = result.visualType || result.visualizationData?.visualType;
+      const visData = result.visualData || result.visualizationData?.visualData;
 
-        setAiTab("chat");
+      if (visType) setVisualType(visType);
+      if (visData) setVisualData(visData);
 
-        const feedback = result.feedback || "Let me check your code...";
-        const hints = result.hints || [];
+      applyGuidanceResult(result, fullProblemData);
+      setAiTab("visual");
 
-        // Update visual state if available (check both top-level and nested)
-        const visType =
-          result.visualType || result.visualizationData?.visualType;
-        const visData =
-          result.visualData || result.visualizationData?.visualData;
-        if (visType) {
-          setVisualType(visType);
-        }
-        if (visData) {
-          setVisualData(visData);
-        }
-        applyGuidanceResult(result, fullProblemData);
-        if (visType || visData || result.feedback) {
-          setAiTab("visual");
-          console.log("🎨 Visual state updated from chat:", {
-            visType,
-            visData,
-          });
-        }
-
-        setChatMsgs((msgs) => [
-          ...msgs,
-          {
-            role: "ai",
-            text: feedback,
-            chips:
-              hints.length > 0
-                ? hints.slice(0, 3)
-                : ["Show me the pattern", "Give me a hint", "Next step"],
-          },
-        ]);
-      } catch (e: any) {
-        setChatMsgs((msgs) => [
-          ...msgs,
-          {
-            role: "ai",
-            text: "Let me guide you through the visual steps instead.",
-            chips: ["Show step 1", "Give me a hint", "What pattern?"],
-          },
-        ]);
-        setAiTab("visual");
-        setCurrentStep(0);
-      }
-    } else {
-      // Use local guide
-      setTimeout(() => {
-        const response = getAIResponse(userQ);
-        setAiTab("visual");
-        setCurrentStep(response.step);
-
-        setChatMsgs((msgs) => [
-          ...msgs,
-          {
-            role: "ai",
-            text: response.text,
-            chips: response.chips,
-          },
-        ]);
-      }, 400);
+      setChatMsgs((msgs) => [
+        ...msgs,
+        {
+          role: "ai",
+          text: feedback,
+          chips:
+            hints.length > 0
+              ? hints.slice(0, 3)
+              : ["Show the pattern", "Show the invariant", "What should I change?"],
+        },
+      ]);
+    } catch (e: any) {
+      setChatMsgs((msgs) => [
+        ...msgs,
+        {
+          role: "ai",
+          text: "I hit an issue while updating the coach. Try again in a second.",
+        },
+      ]);
     }
     setIsAIThinking(false);
   };
@@ -2200,82 +2199,150 @@ export default function PairCoderAI() {
         >
           <div
             style={{
-              display: "flex",
-              gap: 4,
-              padding: "10px 12px",
-              borderBottom: "1px solid #2a3348",
-              flexWrap: "wrap",
-            }}
-          >
-            {guide.steps.map((s, i) => (
-              <div
-                key={i}
-                onClick={() => setCurrentStep(i)}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: 20,
-                  fontSize: 10,
-                  fontWeight: 700,
-                  border: "1px solid #3a4460",
-                  color: currentStep === i ? "#a78bfa" : "#55627a",
-                  background: currentStep === i ? "#1e1b38" : "transparent",
-                  cursor: "pointer",
-                  transition: "all 0.15s",
-                }}
-              >
-                {s.label}
-              </div>
-            ))}
-          </div>
-          <div
-            style={{
               flex: 1,
-              overflow: "hidden",
-              position: "relative",
-              background: "#0f1117",
-              margin: 10,
-              borderRadius: 10,
-              border: "1px solid #2a3348",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+              overflowY: "auto",
+              padding: 10,
             }}
           >
             <div
               style={{
-                padding: 18,
                 width: "100%",
-                height: "100%",
                 display: "flex",
                 flexDirection: "column",
-                justifyContent: "center",
-                gap: 10,
+                gap: 12,
+                background: "#0f1117",
+                borderRadius: 10,
+                border: "1px solid #2a3348",
+                padding: 18,
               }}
             >
               <div
                 style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  fontSize: 10,
-                  letterSpacing: "0.05em",
-                  textTransform: "uppercase",
-                  color: "#a78bfa",
-                  background: "#1e2535",
-                  border: "1px solid #2a3348",
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  width: "fit-content",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
                 }}
               >
-                {hasLiveAIProvider ? "Live AI Guide" : "Local Coach"}
-                <span style={{ color: "#55627a" }}>
-                  · Step {currentStep + 1} of {guide.steps.length}
-                </span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 10,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase",
+                      color: "#a78bfa",
+                      background: "#1e2535",
+                      border: "1px solid #2a3348",
+                      padding: "6px 10px",
+                      borderRadius: 999,
+                      width: "fit-content",
+                    }}
+                  >
+                    {coachProviderLabel}
+                    <span style={{ color: "#55627a" }}>· {coachStageLabel}</span>
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0" }}>
+                    {currentProb.name}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                    {coachPattern?.name || fallbackPatternName}
+                    {coachPattern?.description
+                      ? ` · ${coachPattern.description}`
+                      : ""}
+                  </div>
+                </div>
+                {coachState?.complexity && (
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #2a3348",
+                      background: "#111827",
+                      minWidth: 160,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "#55627a",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        marginBottom: 6,
+                      }}
+                    >
+                      Complexity
+                    </div>
+                    <div style={{ fontSize: 12, color: "#e2e8f0", lineHeight: 1.6 }}>
+                      <div>Time: {coachState.complexity.time || "?"}</div>
+                      <div>Space: {coachState.complexity.space || "?"}</div>
+                    </div>
+                  </div>
+                )}
               </div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0" }}>
-                {guide.steps[currentStep]?.label}
-              </div>
+              {(coachPattern?.description || coachInvariant) && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      borderRadius: 10,
+                      border: "1px solid #2a3348",
+                      background: "#111827",
+                      padding: 12,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "#55627a",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        marginBottom: 6,
+                      }}
+                    >
+                      Pattern
+                    </div>
+                    <div style={{ fontSize: 12, color: "#cbd5e1", lineHeight: 1.6 }}>
+                      {coachPattern?.description ||
+                        "Use the data shape and constraints to choose the right pattern first."}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      borderRadius: 10,
+                      border: "1px solid #2a3348",
+                      background: "#111827",
+                      padding: 12,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "#55627a",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        marginBottom: 6,
+                      }}
+                    >
+                      Invariant
+                    </div>
+                    <div style={{ fontSize: 12, color: "#cbd5e1", lineHeight: 1.6 }}>
+                      {coachInvariant}
+                    </div>
+                  </div>
+                </div>
+              )}
               <div
                 style={{
                   fontFamily: "'JetBrains Mono', monospace",
@@ -2306,48 +2373,84 @@ export default function PairCoderAI() {
                     parseIncompleteMarkdown
                     className="streamdown-body"
                   >
-                    {normalizeCoachMarkdown(
-                      coachFeedback || guide.steps[currentStep]?.explain || "",
-                    )}
+                    {normalizeCoachMarkdown(coachOverview)}
                   </Streamdown>
                 </div>
               </div>
-            </div>
-          </div>
-          <div
-            style={{
-              padding: "10px 14px",
-              borderTop: "1px solid #2a3348",
-              background: "#161b27",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                color: "#55627a",
-                letterSpacing: "0.05em",
-                marginBottom: 3,
-              }}
-            >
-              Teacher observing
-            </div>
-            <div
-              style={{
-                fontSize: 12,
-                color: "#8892a4",
-              }}
-            >
-              <div className="streamdown-shell streamdown-shell-muted">
-                <Streamdown
-                  parseIncompleteMarkdown
-                  className="streamdown-body"
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    borderRadius: 10,
+                    border: "1px solid #2a3348",
+                    background: "#111827",
+                    padding: 12,
+                  }}
                 >
-                  {normalizeCoachMarkdown(
-                    coachFeedback || guide.steps[currentStep]?.explain || "",
-                  )}
-                </Streamdown>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: "#55627a",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      marginBottom: 6,
+                    }}
+                  >
+                    Next exact move
+                  </div>
+                  <div style={{ fontSize: 12, color: "#e2e8f0", lineHeight: 1.6 }}>
+                    {coachNextStep}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    borderRadius: 10,
+                    border: "1px solid #2a3348",
+                    background: "#111827",
+                    padding: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: "#55627a",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      marginBottom: 6,
+                    }}
+                  >
+                    Checklist
+                  </div>
+                  <div style={{ fontSize: 12, color: "#cbd5e1", lineHeight: 1.7 }}>
+                    {coachCheckpoints.length > 0 ? (
+                      coachCheckpoints.map((item, index) => (
+                        <div key={`${item}-${index}`}>- {item}</div>
+                      ))
+                    ) : (
+                      <div>- Keep the state minimal.</div>
+                    )}
+                  </div>
+                </div>
               </div>
+              {coachState?.providerMessage && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#64748b",
+                    borderTop: "1px solid #1f2937",
+                    paddingTop: 2,
+                  }}
+                >
+                  {coachState.providerMessage}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2385,7 +2488,7 @@ export default function PairCoderAI() {
                 }}
               >
                 I&apos;m your <strong>AI Pair Coder</strong>. I&apos;ll watch your
-                code and guide you visually through every Blind 75 pattern.
+                code, explain the pattern, and tell you the next exact change to make.
                 <div
                   style={{
                     display: "flex",
@@ -2396,7 +2499,7 @@ export default function PairCoderAI() {
                 >
                   {[
                     "Explain pattern",
-                    "Visual guide",
+                    "Give me an overview",
                     "What pattern?",
                     "I'm stuck",
                   ].map((c) => (
@@ -3427,23 +3530,18 @@ export default function PairCoderAI() {
               display: editorTab === "code" ? "block" : "none",
               height: "100%",
             }}
-            onKeyDownCapture={handleEditorKeyDown}
           >
-            <CodeMirror
-              value={code}
-              height="100%"
-              theme={editorPrefs.darkMode ? vscodeDark : undefined}
-              extensions={getExtensions()}
-              basicSetup={{
-                autocompletion: editorPrefs.autocomplete,
-                closeBrackets: editorPrefs.autoCloseBrackets,
-                highlightSpecialChars: editorPrefs.showWhitespace,
-              }}
-              onChange={handleEditorChange}
-              style={{
-                fontSize: FONT_SIZE_MAP[editorPrefs.fontSize] || 15,
-                height: "100%",
-              }}
+            <MemoCodeEditor
+              key={`${currentProb.slug}-${language}`}
+              initialValue={editorCode}
+              darkMode={editorPrefs.darkMode}
+              extensions={editorExtensions}
+              autocomplete={editorPrefs.autocomplete}
+              autoCloseBrackets={editorPrefs.autoCloseBrackets}
+              showWhitespace={editorPrefs.showWhitespace}
+              fontSize={FONT_SIZE_MAP[editorPrefs.fontSize] || 15}
+              onDocChange={handleEditorChange}
+              onRun={handleEditorKeyDown}
             />
           </div>
           <div

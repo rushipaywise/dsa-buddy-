@@ -41,10 +41,10 @@ export const PROBLEMS: Problem[] = [
     guide: {
       steps: [
         { label: 'Brute Force', explain: 'Compare every pair (i, j) where i < j. If nums[i] == nums[j], found duplicate. Time: O(n^2).' },
-        { label: 'Key Insight', explain: 'Instead of re-comparing, "remember" what we have seen. A Hash Set gives us O(1) lookup.' },
-        { label: 'One Pass', explain: 'Iterate once. If current number is in the set, return true. Otherwise, add it and continue.' },
-        { label: 'Example Trace', explain: 'Nums: [1,2,3,1] -> Set: {1} -> {1,2} -> {1,2,3} -> "1" is already in set! Return true.' },
-        { label: 'Complexity', explain: 'Time: O(n) as we visit each element once. Space: O(n) to store seen elements in the Set.' }
+        { label: 'Key Insight', explain: 'Instead of re-comparing, remember what you have seen. A Hash Set gives O(1) membership checks.' },
+        { label: 'One Pass', explain: 'Iterate once. If the current number is already in the set, return true. Otherwise add it and continue.' },
+        { label: 'Example Trace', explain: 'Nums: [1,2,3,1] -> seen {1} -> {1,2} -> {1,2,3} -> 1 repeats, so return true.' },
+        { label: 'Complexity', explain: 'Time: O(n). Space: O(n) for the seen set.' }
       ]
     }
   },

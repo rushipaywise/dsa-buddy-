@@ -5,7 +5,7 @@ dist/
 coverage/
 .DS_Store
 *.log
-.tsbuildinfo
+*.tsbuildinfo
 .env*
 !.env.example
 config/mcp.config.json
